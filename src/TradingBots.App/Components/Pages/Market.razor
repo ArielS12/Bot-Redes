@@ -1,0 +1,55 @@
+@page "/market"
+@inject IHttpClientFactory HttpFactory
+@inject NavigationManager Nav
+
+<PageTitle>Mercado</PageTitle>
+<h1>Estado actual del mercado</h1>
+
+<div class="mb-3">
+    <label class="form-label">Simbolos (coma separada)</label>
+    <div class="d-flex gap-2">
+        <InputText class="form-control" @bind-Value="_symbols" />
+        <button class="btn btn-primary" @onclick="Load">Actualizar</button>
+    </div>
+</div>
+
+<table class="table table-striped">
+    <thead>
+        <tr>
+            <th>Par</th>
+            <th>Precio</th>
+            <th>Variacion 24h</th>
+        </tr>
+    </thead>
+    <tbody>
+        @foreach (var item in _data)
+        {
+            <tr>
+                <td>@item.Symbol</td>
+                <td>@item.LastPrice.ToString("0.########")</td>
+                <td class="@PnlClass(item.PriceChangePercent24h)">@item.PriceChangePercent24h.ToString("0.00")%</td>
+            </tr>
+        }
+    </tbody>
+</table>
+
+@code {
+    private string _symbols = "BTCUSDT,ETHUSDT,SOLUSDT,BNBUSDT";
+    private readonly List<MarketTicker> _data = [];
+
+    protected override async Task OnInitializedAsync() => await Load();
+
+    private async Task Load()
+    {
+        var client = HttpFactory.CreateClient();
+        client.BaseAddress = new Uri(Nav.BaseUri);
+        var result = await client.GetFromJsonAsync<List<MarketTicker>>($"/api/market/overview?symbols={_symbols}");
+        _data.Clear();
+        if (result is not null)
+        {
+            _data.AddRange(result);
+        }
+    }
+
+    private static string PnlClass(decimal value) => value >= 0 ? "text-success" : "text-danger";
+}

@@ -1,0 +1,142 @@
+@page "/"
+@inject IHttpClientFactory HttpFactory
+@inject NavigationManager Nav
+
+<PageTitle>Dashboard</PageTitle>
+<h1>Dashboard de Bots</h1>
+
+@if (!string.IsNullOrWhiteSpace(_errorMessage))
+{
+    <div class="alert alert-warning" role="alert">
+        @_errorMessage
+    </div>
+}
+
+@if (_summary is null)
+{
+    <p>Cargando...</p>
+}
+else
+{
+    <div class="row g-3 mb-4">
+        <div class="col-md-3">
+            <div class="card"><div class="card-body"><h6>Bots</h6><h3>@_summary.TotalBots</h3></div></div>
+        </div>
+        <div class="col-md-3">
+            <div class="card"><div class="card-body"><h6>Activos</h6><h3>@_summary.RunningBots</h3></div></div>
+        </div>
+        <div class="col-md-3">
+            <div class="card"><div class="card-body"><h6>Budget total</h6><h3>@_summary.TotalBudget.ToString("0.00") USDT</h3></div></div>
+        </div>
+        <div class="col-md-3">
+            <div class="card"><div class="card-body"><h6>PnL total</h6><h3 class="@PnlClass(_summary.TotalPnl)">@_summary.TotalPnl.ToString("0.00") USDT</h3></div></div>
+        </div>
+    </div>
+    <div class="alert alert-info">
+        <strong>Auto-creator:</strong> @_summary.LastAutoTraderStatus
+        <span class="ms-2">(@(_summary.LastAutoTraderRunUtc?.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss") ?? "sin fecha"))</span>
+    </div>
+    <div class="mb-3">
+        <span class="badge @ExecutionBadgeClass(_summary)">
+            @ExecutionBadgeText(_summary)
+        </span>
+    </div>
+
+    <h4>Mercado</h4>
+    <table class="table table-sm table-striped">
+        <thead>
+            <tr><th>Par</th><th>Precio</th><th>24h</th></tr>
+        </thead>
+        <tbody>
+            @foreach (var ticker in _summary.Market)
+            {
+                <tr>
+                    <td>@ticker.Symbol</td>
+                    <td>@ticker.LastPrice.ToString("0.########")</td>
+                    <td class="@PnlClass(ticker.PriceChangePercent24h)">@ticker.PriceChangePercent24h.ToString("0.00")%</td>
+                </tr>
+            }
+        </tbody>
+    </table>
+
+    <h4 class="mt-4">Sugerencias del bot analista</h4>
+    <table class="table table-sm table-striped">
+        <thead>
+            <tr><th>Par</th><th>Señal</th><th>Estrategia sugerida</th><th>Score</th><th>24h</th><th>Motivo</th></tr>
+        </thead>
+        <tbody>
+            @foreach (var suggestion in _summary.Suggestions)
+            {
+                <tr>
+                    <td>@suggestion.Symbol</td>
+                    <td class="@SignalClass(suggestion.Signal)">@suggestion.Signal</td>
+                    <td><span class="badge bg-secondary">@suggestion.SuggestedStrategy</span></td>
+                    <td>@suggestion.Score.ToString("0.0000")</td>
+                    <td class="@PnlClass(suggestion.PriceChangePercent24h)">@suggestion.PriceChangePercent24h.ToString("0.00")%</td>
+                    <td>@suggestion.Rationale</td>
+                </tr>
+            }
+        </tbody>
+    </table>
+
+    <h4 class="mt-4">Profit/Perdida por bot</h4>
+    <table class="table table-sm table-striped">
+        <thead>
+            <tr><th>Bot</th><th>Hoy</th><th>Acumulado</th></tr>
+        </thead>
+        <tbody>
+            @foreach (var p in _summary.BotPerformance)
+            {
+                <tr>
+                    <td>@p.BotName</td>
+                    <td class="@PnlClass(p.DailyPnlUsdt)">@p.DailyPnlUsdt.ToString("0.00") USDT</td>
+                    <td class="@PnlClass(p.TotalPnlUsdt)">@p.TotalPnlUsdt.ToString("0.00") USDT</td>
+                </tr>
+            }
+        </tbody>
+    </table>
+}
+
+@code {
+    private DashboardSummary? _summary;
+    private string _errorMessage = string.Empty;
+
+    protected override async Task OnInitializedAsync()
+    {
+        var client = HttpFactory.CreateClient();
+        client.BaseAddress = new Uri(Nav.BaseUri);
+        try
+        {
+            using var response = await client.GetAsync("/api/dashboard/summary");
+            if (!response.IsSuccessStatusCode)
+            {
+                _errorMessage = $"No se pudo cargar el dashboard (HTTP {(int)response.StatusCode}).";
+                return;
+            }
+
+            _summary = await response.Content.ReadFromJsonAsync<DashboardSummary>();
+            if (_summary is null)
+            {
+                _errorMessage = "El dashboard devolvio una respuesta vacia.";
+            }
+        }
+        catch (Exception ex)
+        {
+            _errorMessage = $"Error cargando dashboard: {ex.Message}";
+        }
+    }
+
+    private static string PnlClass(decimal value) => value >= 0 ? "text-success" : "text-danger";
+    private static string SignalClass(string signal) => signal == "BUY" ? "text-success fw-bold" : "text-warning";
+    private static string ExecutionBadgeClass(DashboardSummary summary) =>
+        summary.RealTradingEnabled ? "bg-danger" : "bg-secondary";
+    private static string ExecutionBadgeText(DashboardSummary summary)
+    {
+        if (summary.RealTradingEnabled)
+        {
+            return $"LIVE-{summary.ExchangeEnvironment}";
+        }
+
+        return $"PAPER-{summary.ExchangeEnvironment}";
+    }
+}

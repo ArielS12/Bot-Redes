@@ -1,0 +1,77 @@
+@page "/bots/{BotId:guid}"
+@inject IHttpClientFactory HttpFactory
+@inject NavigationManager Nav
+
+<PageTitle>Detalle de bot</PageTitle>
+
+@if (_bot is null)
+{
+    <p>Cargando detalle...</p>
+}
+else
+{
+    <h1>Detalle: @_bot.Name</h1>
+    <div class="row g-3 mb-3">
+        <div class="col-md-3">
+            <div class="card"><div class="card-body"><h6>Estado</h6><h5>@_bot.State</h5></div></div>
+        </div>
+        <div class="col-md-3">
+            <div class="card"><div class="card-body"><h6>Estrategia</h6><h5>@_bot.StrategyType</h5></div></div>
+        </div>
+        <div class="col-md-3">
+            <div class="card"><div class="card-body"><h6>Budget</h6><h5>@_bot.BudgetUsdt.ToString("0.00") USDT</h5></div></div>
+        </div>
+        <div class="col-md-3">
+            <div class="card"><div class="card-body"><h6>PnL total</h6><h5 class="@PnlClass(_bot.RealizedPnlUsdt + _bot.UnrealizedPnlUsdt)">@(_bot.RealizedPnlUsdt + _bot.UnrealizedPnlUsdt).ToString("0.00") USDT</h5></div></div>
+        </div>
+    </div>
+
+    <h4>Compras / Ventas</h4>
+    <table class="table table-striped table-sm">
+        <thead>
+            <tr>
+                <th>Fecha</th>
+                <th>Par</th>
+                <th>Side</th>
+                <th>Precio</th>
+                <th>Cantidad</th>
+                <th>PnL realizado</th>
+            </tr>
+        </thead>
+        <tbody>
+            @foreach (var trade in _trades)
+            {
+                <tr>
+                    <td>@trade.ExecutedAtUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss")</td>
+                    <td>@trade.Symbol</td>
+                    <td class="@(trade.Side == "BUY" ? "text-primary" : "text-warning")">@trade.Side</td>
+                    <td>@trade.Price.ToString("0.########")</td>
+                    <td>@trade.Quantity.ToString("0.########")</td>
+                    <td class="@PnlClass(trade.RealizedPnlUsdt)">@trade.RealizedPnlUsdt.ToString("0.00")</td>
+                </tr>
+            }
+        </tbody>
+    </table>
+}
+
+@code {
+    [Parameter] public Guid BotId { get; set; }
+
+    private TradingBot? _bot;
+    private readonly List<TradeExecution> _trades = [];
+
+    protected override async Task OnInitializedAsync()
+    {
+        var client = HttpFactory.CreateClient();
+        client.BaseAddress = new Uri(Nav.BaseUri);
+        _bot = await client.GetFromJsonAsync<TradingBot>($"/api/bots/{BotId}");
+        var trades = await client.GetFromJsonAsync<List<TradeExecution>>($"/api/bots/{BotId}/trades");
+        _trades.Clear();
+        if (trades is not null)
+        {
+            _trades.AddRange(trades);
+        }
+    }
+
+    private static string PnlClass(decimal value) => value >= 0 ? "text-success" : "text-danger";
+}

@@ -1,0 +1,378 @@
+@page "/settings"
+@inject IHttpClientFactory HttpFactory
+@inject NavigationManager Nav
+
+<PageTitle>Exchange</PageTitle>
+<h1>Configuracion de Binance</h1>
+@if (!string.IsNullOrWhiteSpace(_message))
+{
+    <div class="alert @(_isError ? "alert-danger" : "alert-success")" role="alert">
+        @_message
+    </div>
+}
+
+@if (_readiness is not null)
+{
+    <div class="card mb-3">
+        <div class="card-header">Estado operativo</div>
+        <div class="card-body">
+            <div><strong>App:</strong> @(_readiness.AppHealthy ? "OK" : "Error")</div>
+            <div><strong>Bots corriendo:</strong> @(_readiness.HasRunningBots ? "Si" : "No")</div>
+            <div><strong>Exchange configurado:</strong> @(_readiness.ExchangeConfigured ? "Si" : "No")</div>
+            <div><strong>Guardas Live:</strong> @(_readiness.LiveGuardsOk ? "OK" : "Pendiente")</div>
+            <div><strong>Live listo:</strong> @(_readiness.LiveReady ? "SI" : "NO")</div>
+            <div class="text-muted">@_readiness.Summary</div>
+        </div>
+    </div>
+}
+
+<div class="card mb-3">
+    <div class="card-body">
+        <h6>Sesion administrador (JWT)</h6>
+        <div class="row g-2">
+            <div class="col-md-4">
+                <input class="form-control" @bind="_username" placeholder="Usuario" />
+            </div>
+            <div class="col-md-4">
+                <input class="form-control" @bind="_password" placeholder="Password" type="password" />
+            </div>
+            <div class="col-md-4">
+                <button class="btn btn-dark" @onclick="Login">Login</button>
+                @if (!string.IsNullOrWhiteSpace(_token))
+                {
+                    <span class="ms-2 text-success">Autenticado</span>
+                }
+            </div>
+        </div>
+    </div>
+</div>
+
+@if (_form is null)
+{
+    <p>Cargando configuracion...</p>
+}
+else
+{
+    <EditForm Model="_form" OnValidSubmit="Save">
+        <div class="card">
+            <div class="card-header">Conexion</div>
+            <div class="card-body">
+                <div class="form-check mb-3">
+                    <InputCheckbox class="form-check-input" @bind-Value="_form.IsEnabled" />
+                    <label class="form-check-label ms-2">Habilitar conexion de exchange</label>
+                </div>
+
+                <label class="form-label">Entorno</label>
+                <InputSelect class="form-select mb-2" @bind-Value="_form.Environment">
+                    <option value="@BinanceEnvironment.Sandbox">Sandbox (testnet)</option>
+                    <option value="@BinanceEnvironment.Production">Produccion</option>
+                </InputSelect>
+
+                <label class="form-label">Modo de ejecucion</label>
+                <InputSelect class="form-select mb-2" @bind-Value="_form.ExecutionMode">
+                    <option value="@TradeExecutionMode.Paper">Paper (simulado, sin ordenes reales)</option>
+                    <option value="@TradeExecutionMode.Live">Live (ordenes reales)</option>
+                </InputSelect>
+
+                @if (_form.ExecutionMode == TradeExecutionMode.Live && _form.Environment == BinanceEnvironment.Production)
+                {
+                    <div class="alert alert-warning">
+                        Estas por habilitar trading REAL en PRODUCCION.
+                    </div>
+                    <div class="form-check mb-3">
+                        <InputCheckbox class="form-check-input" @bind-Value="_form.LiveSafetyConfirmed" />
+                        <label class="form-check-label ms-2">
+                            Confirmo explicitamente que deseo ejecutar ordenes reales en Produccion.
+                        </label>
+                    </div>
+                }
+
+                <div class="form-check mb-2">
+                    <InputCheckbox class="form-check-input" @bind-Value="_form.GlobalKillSwitch" />
+                    <label class="form-check-label ms-2">Global Kill Switch (bloquea ordenes Live)</label>
+                </div>
+                <div class="form-check mb-3">
+                    <InputCheckbox class="form-check-input" @bind-Value="_form.LiveEnabledByChecklist" />
+                    <label class="form-check-label ms-2">Live armado por checklist</label>
+                </div>
+
+                <div class="form-check mb-2">
+                    <input class="form-check-input" type="checkbox" checked="@AutoMonitoringEnabled" @onchange="OnAutoMonitoringChanged" />
+                    <label class="form-check-label ms-2">Monitoreo automatico de bots (auto-creador/supervisor)</label>
+                </div>
+                <label class="form-label">Capacidad maxima de AutoBots</label>
+                <InputNumber class="form-control mb-3" @bind-Value="_form.MaxAutoBots" disabled="@(!AutoMonitoringEnabled)" />
+
+                <hr />
+                <h6>ML Fase 1</h6>
+                <div class="form-check mb-2">
+                    <InputCheckbox class="form-check-input" @bind-Value="_form.MlEnabled" />
+                    <label class="form-check-label ms-2">Habilitar modelo ML para decisiones de entrada</label>
+                </div>
+                <div class="form-check mb-2">
+                    <InputCheckbox class="form-check-input" @bind-Value="_form.MlShadowMode" />
+                    <label class="form-check-label ms-2">Modo sombra (no bloquea entradas, solo mide)</label>
+                </div>
+                <label class="form-label">Probabilidad minima de acierto (si sombra = OFF)</label>
+                <InputNumber class="form-control mb-2" @bind-Value="_form.MlMinWinProbability" />
+                <label class="form-label">Muestras minimas para entrenar modelo</label>
+                <InputNumber class="form-control mb-3" @bind-Value="_form.MlMinSamples" />
+
+                <label class="form-label">API Key</label>
+                <InputText class="form-control mb-2" @bind-Value="_form.ApiKey" />
+
+                <label class="form-label">API Secret</label>
+                <InputText class="form-control mb-2" @bind-Value="_form.ApiSecret" type="password" />
+
+                @if (!string.IsNullOrWhiteSpace(_secretMasked))
+                {
+                    <div class="text-muted mb-3">Secret guardado actual: @_secretMasked</div>
+                }
+
+                <button class="btn btn-primary" type="submit">Guardar configuracion</button>
+                <button class="btn btn-outline-dark ms-2" type="button" @onclick="CheckAccountSummary">Probar conexion y balance</button>
+                <button class="btn btn-outline-warning ms-2" type="button" @onclick="ArmLiveChecklist">Armar Live (checklist)</button>
+            </div>
+        </div>
+    </EditForm>
+
+    @if (_accountSummary is not null)
+    {
+        <div class="card mt-3">
+            <div class="card-header">Resumen de cuenta Binance</div>
+            <div class="card-body">
+                <div><strong>Conexion:</strong> @(_accountSummary.Connected ? "OK" : "No disponible")</div>
+                <div><strong>Entorno:</strong> @_accountSummary.EnvironmentName</div>
+                <div><strong>USDT libre:</strong> @_accountSummary.UsdtFree.ToString("0.########")</div>
+                <div><strong>USDT bloqueado:</strong> @_accountSummary.UsdtLocked.ToString("0.########")</div>
+                <div><strong>USDC libre:</strong> @_accountSummary.UsdcFree.ToString("0.########")</div>
+                <div><strong>USDC bloqueado:</strong> @_accountSummary.UsdcLocked.ToString("0.########")</div>
+                <div><strong>FDUSD libre:</strong> @_accountSummary.FdusdFree.ToString("0.########")</div>
+                <div><strong>FDUSD bloqueado:</strong> @_accountSummary.FdusdLocked.ToString("0.########")</div>
+                <div class="text-muted">@_accountSummary.Message</div>
+            </div>
+        </div>
+    }
+
+    @if (_health is not null)
+    {
+        <div class="card mt-3">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <span>Binance Health Check</span>
+                <button class="btn btn-sm btn-outline-secondary" type="button" @onclick="CheckHealth">Actualizar</button>
+            </div>
+            <div class="card-body">
+                <div><strong>Entorno:</strong> @_health.EnvironmentName</div>
+                <div><strong>Live habilitado:</strong> @(_health.TradingLiveEnabled ? "Si" : "No")</div>
+                <div><strong>Offset de tiempo (ms):</strong> @_health.TimeOffsetMs</div>
+                <div><strong>Ultima sync reloj UTC:</strong> @_health.LastTimeSyncUtc?.ToString("O")</div>
+                <div><strong>429 acumulados:</strong> @_health.RateLimit429Count</div>
+                <div><strong>418 acumulados:</strong> @_health.RateLimit418Count</div>
+                <div><strong>Reconciliaciones:</strong> @_health.ReconcileRecovered / @_health.ReconcileAttempts (@_health.ReconcileRecoveryRatePercent.ToString("0.##")%)</div>
+                <div><strong>Ultimo error:</strong> @((string.IsNullOrWhiteSpace(_health.LastExecutionError) ? "Sin errores recientes" : _health.LastExecutionError))</div>
+            </div>
+        </div>
+    }
+}
+
+@code {
+    private UpdateBinanceSettingsRequest? _form;
+    private string _secretMasked = string.Empty;
+    private string _username = "admin";
+    private string _password = "admin123";
+    private string _token = string.Empty;
+    private string _message = string.Empty;
+    private bool _isError;
+    private BinanceAccountSummary? _accountSummary;
+    private SystemReadinessView? _readiness;
+    private BinanceHealthView? _health;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await Reload();
+    }
+
+    private async Task Reload()
+    {
+        var client = HttpFactory.CreateClient();
+        client.BaseAddress = new Uri(Nav.BaseUri);
+        var current = await client.GetFromJsonAsync<BinanceSettingsView>("/api/settings/binance");
+        if (current is null)
+        {
+            return;
+        }
+
+        _secretMasked = current.ApiSecretMasked;
+        _form = new UpdateBinanceSettingsRequest
+        {
+            IsEnabled = current.IsEnabled,
+            ExecutionMode = current.ExecutionMode,
+            Environment = current.Environment,
+            LiveSafetyConfirmed = current.LiveSafetyConfirmed,
+            LiveEnabledByChecklist = current.LiveEnabledByChecklist,
+            GlobalKillSwitch = current.GlobalKillSwitch,
+            MaxAutoBots = current.MaxAutoBots,
+            MlEnabled = current.MlEnabled,
+            MlShadowMode = current.MlShadowMode,
+            MlMinWinProbability = current.MlMinWinProbability <= 0m ? 0.55m : current.MlMinWinProbability,
+            MlMinSamples = current.MlMinSamples <= 0 ? 80 : current.MlMinSamples,
+            ApiKey = current.ApiKey,
+            ApiSecret = string.Empty
+        };
+        _readiness = await client.GetFromJsonAsync<SystemReadinessView>("/api/system/readiness");
+        if (!string.IsNullOrWhiteSpace(_token))
+        {
+            await CheckHealth();
+        }
+    }
+
+    private async Task Login()
+    {
+        var client = HttpFactory.CreateClient();
+        client.BaseAddress = new Uri(Nav.BaseUri);
+        var response = await client.PostAsJsonAsync("/api/auth/login", new LoginRequest
+        {
+            Username = _username,
+            Password = _password
+        });
+
+        if (response.IsSuccessStatusCode)
+        {
+            var data = await response.Content.ReadFromJsonAsync<LoginResponse>();
+            _token = data?.Token ?? string.Empty;
+            await CheckHealth();
+            _isError = false;
+            _message = "Login correcto.";
+        }
+        else
+        {
+            _isError = true;
+            _message = "Login fallido.";
+        }
+    }
+
+    private async Task Save()
+    {
+        if (_form is null)
+        {
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(_token))
+        {
+            _isError = true;
+            _message = "Debes hacer login para guardar configuracion.";
+            return;
+        }
+
+        var client = HttpFactory.CreateClient();
+        client.BaseAddress = new Uri(Nav.BaseUri);
+        client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", _token);
+
+        var response = await client.PutAsJsonAsync("/api/settings/binance", _form);
+        if (response.IsSuccessStatusCode)
+        {
+            await Reload();
+            _isError = false;
+            _message = "Configuracion guardada.";
+        }
+        else
+        {
+            var detail = await response.Content.ReadAsStringAsync();
+            _isError = true;
+            _message = $"No se pudo guardar (HTTP {(int)response.StatusCode}). {detail}";
+        }
+    }
+
+    private bool AutoMonitoringEnabled => _form is not null && _form.MaxAutoBots > 0;
+
+    private void OnAutoMonitoringChanged(ChangeEventArgs args)
+    {
+        if (_form is null)
+        {
+            return;
+        }
+
+        var enabled = args.Value is bool value && value;
+        _form.MaxAutoBots = enabled ? Math.Max(1, _form.MaxAutoBots) : 0;
+    }
+
+    private async Task CheckAccountSummary()
+    {
+        if (string.IsNullOrWhiteSpace(_token))
+        {
+            _isError = true;
+            _message = "Debes hacer login para consultar balance.";
+            return;
+        }
+
+        var client = HttpFactory.CreateClient();
+        client.BaseAddress = new Uri(Nav.BaseUri);
+        client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", _token);
+        var response = await client.GetAsync("/api/settings/binance/account-summary");
+        if (response.IsSuccessStatusCode)
+        {
+            _accountSummary = await response.Content.ReadFromJsonAsync<BinanceAccountSummary>();
+            _isError = false;
+            _message = "Consulta de cuenta completada.";
+        }
+        else
+        {
+            _accountSummary = null;
+            var detail = await response.Content.ReadAsStringAsync();
+            _isError = true;
+            _message = $"No se pudo consultar cuenta (HTTP {(int)response.StatusCode}). {detail}";
+        }
+    }
+
+    private async Task CheckHealth()
+    {
+        if (string.IsNullOrWhiteSpace(_token))
+        {
+            _health = null;
+            return;
+        }
+
+        var client = HttpFactory.CreateClient();
+        client.BaseAddress = new Uri(Nav.BaseUri);
+        client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", _token);
+        var response = await client.GetAsync("/api/settings/binance/health");
+        if (response.IsSuccessStatusCode)
+        {
+            _health = await response.Content.ReadFromJsonAsync<BinanceHealthView>();
+        }
+    }
+
+    private async Task ArmLiveChecklist()
+    {
+        if (string.IsNullOrWhiteSpace(_token))
+        {
+            _isError = true;
+            _message = "Debes hacer login para armar Live.";
+            return;
+        }
+
+        var client = HttpFactory.CreateClient();
+        client.BaseAddress = new Uri(Nav.BaseUri);
+        client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", _token);
+        var payload = new LiveChecklistRequest
+        {
+            ConfirmApiTradingPermission = true,
+            ConfirmIpWhitelist = true,
+            ConfirmSmallSizeFirst = true
+        };
+        var response = await client.PostAsJsonAsync("/api/settings/binance/arm-live", payload);
+        if (response.IsSuccessStatusCode)
+        {
+            await Reload();
+            _isError = false;
+            _message = "Live armado por checklist. Kill switch desactivado.";
+        }
+        else
+        {
+            var detail = await response.Content.ReadAsStringAsync();
+            _isError = true;
+            _message = $"No se pudo armar Live (HTTP {(int)response.StatusCode}). {detail}";
+        }
+    }
+}

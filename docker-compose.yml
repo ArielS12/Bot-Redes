@@ -1,0 +1,38 @@
+services:
+  tradingbots-app:
+    build:
+      context: .
+      dockerfile: src/TradingBots.App/Dockerfile
+    container_name: tradingbots-app
+    restart: unless-stopped
+    depends_on:
+      mssql:
+        condition: service_healthy
+    ports:
+      - "5001:5001"
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      ASPNETCORE_URLS: http://+:5001
+      ConnectionStrings__DefaultConnection: "Server=mssql,1433;Database=TradingBotsDb;User Id=sa;Password=${MSSQL_SA_PASSWORD};Encrypt=True;TrustServerCertificate=True;MultipleActiveResultSets=False;Command Timeout=60"
+
+  mssql:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    container_name: tradingbots-mssql
+    restart: unless-stopped
+    environment:
+      ACCEPT_EULA: "Y"
+      MSSQL_SA_PASSWORD: ${MSSQL_SA_PASSWORD}
+      MSSQL_PID: "Express"
+    ports:
+      - "1433:1433"
+    volumes:
+      - mssql_data:/var/opt/mssql
+    healthcheck:
+      test: ["CMD", "/opt/mssql-tools18/bin/sqlcmd", "-S", "localhost", "-U", "sa", "-P", "${MSSQL_SA_PASSWORD}", "-Q", "SELECT 1", "-C"]
+      interval: 20s
+      timeout: 10s
+      retries: 10
+      start_period: 60s
+
+volumes:
+  mssql_data:

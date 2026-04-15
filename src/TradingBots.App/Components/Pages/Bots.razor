@@ -1,0 +1,485 @@
+@page "/bots"
+@inject IHttpClientFactory HttpFactory
+@inject NavigationManager Nav
+
+<PageTitle>Bots</PageTitle>
+<h1>Configuracion de bots</h1>
+<button class="btn btn-primary mb-3" type="button" @onclick="NewBot">Nuevo bot</button>
+@if (!string.IsNullOrWhiteSpace(_pageMessage))
+{
+    <div class="alert @(_pageIsError ? "alert-danger" : "alert-success")" role="alert">
+        @_pageMessage
+    </div>
+}
+
+<div class="card mb-3">
+    <div class="card-body">
+        <h6>Sesion administrador (JWT)</h6>
+        <div class="row g-2">
+            <div class="col-md-4">
+                <input class="form-control" @bind="_username" placeholder="Usuario" />
+            </div>
+            <div class="col-md-4">
+                <input class="form-control" @bind="_password" placeholder="Password" type="password" />
+            </div>
+            <div class="col-md-4">
+                <button class="btn btn-dark" @onclick="Login">Login</button>
+                @if (!string.IsNullOrWhiteSpace(_token))
+                {
+                    <span class="ms-2 text-success">Autenticado</span>
+                }
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="row">
+    <div class="col-12">
+        <table class="table table-striped">
+            <thead>
+                <tr>
+                    <th>Nombre</th>
+                    <th>Estado</th>
+                    <th>Estrategia</th>
+                    <th>Hoy</th>
+                    <th>Acumulado</th>
+                    <th>Resultado</th>
+                    <th>Senal tecnica</th>
+                    <th>Estado salida</th>
+                    <th>Edge</th>
+                    <th>Throttling</th>
+                    <th>Solidez</th>
+                    <th>Budget</th>
+                    <th>Riesgo</th>
+                    <th>Tipo</th>
+                    <th>Acciones</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var bot in _bots)
+                {
+                    <tr>
+                        <td>@bot.Name</td>
+                        <td>@bot.State</td>
+                        <td><span class="badge bg-info text-dark">@bot.StrategyType</span></td>
+                        <td class="@PnlClass(GetDailyPnl(bot.Id))">@GetDailyPnl(bot.Id).ToString("0.00")</td>
+                        <td class="@PnlClass(GetTotalPnl(bot.Id))">@GetTotalPnl(bot.Id).ToString("0.00")</td>
+                        <td>
+                            <span class="badge @PnlBadgeClass(GetTotalPnl(bot.Id))">@PnlLabel(GetTotalPnl(bot.Id))</span>
+                        </td>
+                        <td title="@GetSignalReason(bot.Id)">
+                            <span class="badge @SignalBadgeClass(GetSignalLabel(bot.Id))">@GetSignalLabel(bot.Id)</span>
+                        </td>
+                        <td>
+                            <span class="badge @ExitBadgeClass(GetExitState(bot.Id))">@GetExitState(bot.Id)</span>
+                        </td>
+                        <td class="@(bot.RollingExpectancyUsdt >= 0m ? "text-success" : "text-danger")">
+                            @bot.RollingExpectancyUsdt.ToString("0.0000")
+                        </td>
+                        <td>
+                            <span class="badge @EdgeThrottleBadgeClass(bot)">
+                                @EdgeThrottleLabel(bot)
+                            </span>
+                        </td>
+                        <td title="@GetSolidityReason(bot.Id)">
+                            <span class="badge @SolidityBadgeClass(bot.Id)">
+                                @GetSolidityTier(bot.Id) (@GetSolidityScore(bot.Id).ToString("0.##"))
+                            </span>
+                        </td>
+                        <td>@bot.BudgetUsdt.ToString("0.00")</td>
+                        <td title="@($"Perdidas seguidas: {bot.ConsecutiveLossTrades}/{bot.MaxConsecutiveLossTrades}. Error: {bot.LastExecutionError}")">
+                            <span class="badge bg-light text-dark">
+                                @bot.MaxPositionPerTradeUsdt.ToString("0.##") / @bot.MaxExposurePercent.ToString("0.##")%
+                            </span>
+                        </td>
+                        <td>
+                            @if (bot.IsAutoManaged)
+                            {
+                                <span class="badge bg-dark">Auto</span>
+                            }
+                            else
+                            {
+                                <span class="badge bg-secondary">Manual</span>
+                            }
+                        </td>
+                        <td>
+                            <a class="btn btn-sm btn-outline-dark me-1" href="/bots/@bot.Id">Detalle</a>
+                            <button class="btn btn-sm btn-outline-primary me-1" type="button" @onclick="() => Edit(bot)">Editar</button>
+                            @if (bot.State == BotState.Running)
+                            {
+                                <button class="btn btn-sm btn-warning" @onclick="() => Toggle(bot, false)">Detener</button>
+                            }
+                            else
+                            {
+                                <button class="btn btn-sm btn-success" @onclick="() => Toggle(bot, true)">Iniciar</button>
+                            }
+                        </td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+</div>
+</div>
+
+@if (_showEditorModal)
+{
+    <div class="position-fixed top-0 start-0 w-100 h-100 d-flex align-items-center justify-content-center"
+         style="background-color: rgba(0,0,0,0.45); z-index: 1050;">
+        <div class="card shadow" style="width: 100%; max-width: 680px;">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <span>@(_editingId is null ? "Nuevo bot" : $"Editar bot: {_editingName}")</span>
+                <button type="button" class="btn btn-sm btn-outline-secondary" @onclick="CloseEditor">X</button>
+            </div>
+            <div class="card-body">
+                @if (!string.IsNullOrWhiteSpace(_editorMessage))
+                {
+                    <div class="alert @(_editorIsError ? "alert-danger" : "alert-success")" role="alert">
+                        @_editorMessage
+                    </div>
+                }
+                <EditForm Model="_form" OnValidSubmit="Save" @key="_formKey">
+                    <DataAnnotationsValidator />
+
+                    <label>Nombre</label>
+                    <InputText class="form-control mb-2" @bind-Value="_form.Name" />
+
+                    <label>Budget (USDT)</label>
+                    <InputNumber class="form-control mb-2" @bind-Value="_form.BudgetUsdt" />
+
+                    <label>Max por trade (USDT)</label>
+                    <small class="form-text text-muted d-block mb-1">Mínimo operativo del motor: 10 USDT por compra.</small>
+                    <InputNumber class="form-control mb-2" @bind-Value="_form.MaxPositionPerTradeUsdt" />
+
+                    <label>Stop loss %</label>
+                    <InputNumber class="form-control mb-2" @bind-Value="_form.StopLossPercent" />
+
+                    <label>Take profit %</label>
+                    <InputNumber class="form-control mb-2" @bind-Value="_form.TakeProfitPercent" />
+
+                    <label>TP1 %</label>
+                    <InputNumber class="form-control mb-2" @bind-Value="_form.TakeProfit1Percent" />
+
+                    <label>TP1 cierre parcial (%)</label>
+                    <InputNumber class="form-control mb-2" @bind-Value="_form.TakeProfit1SellPercent" />
+
+                    <label>TP2 % (cierre total)</label>
+                    <InputNumber class="form-control mb-2" @bind-Value="_form.TakeProfit2Percent" />
+
+                    <label>Activacion trailing %</label>
+                    <InputNumber class="form-control mb-2" @bind-Value="_form.TrailingActivationPercent" />
+
+                    <label>Trailing stop %</label>
+                    <InputNumber class="form-control mb-2" @bind-Value="_form.TrailingStopPercent" />
+
+                    <label>Time-stop (minutos)</label>
+                    <InputNumber class="form-control mb-2" @bind-Value="_form.MaxHoldingMinutes" />
+
+                    <label>Max perdida diaria (USDT)</label>
+                    <InputNumber class="form-control mb-2" @bind-Value="_form.MaxDailyLossUsdt" />
+
+                    <label>Exposicion maxima (%)</label>
+                    <InputNumber class="form-control mb-2" @bind-Value="_form.MaxExposurePercent" />
+
+                    <label>Cooldown tras perdida (minutos)</label>
+                    <InputNumber class="form-control mb-2" @bind-Value="_form.CooldownMinutesAfterLoss" />
+
+                    <label>Max perdidas consecutivas</label>
+                    <InputNumber class="form-control mb-2" @bind-Value="_form.MaxConsecutiveLossTrades" />
+
+                    <label>Simbolos (coma separada)</label>
+                    <InputText class="form-control mb-3" @bind-Value="_symbolsText" />
+
+                    <button class="btn btn-primary" type="submit">Guardar</button>
+                    <button class="btn btn-secondary ms-2" type="button" @onclick="CloseEditor">Cancelar</button>
+                </EditForm>
+            </div>
+        </div>
+    </div>
+}
+
+@code {
+    private CreateOrUpdateBotRequest _form = new();
+    private readonly List<TradingBot> _bots = [];
+    private readonly Dictionary<Guid, BotPerformanceItem> _perf = [];
+    private readonly Dictionary<Guid, BotSignalDiagnosticsItem> _signals = [];
+    private readonly Dictionary<Guid, BotAnalyticsItem> _analytics = [];
+    private Guid? _editingId;
+    private string _editingName = string.Empty;
+    private int _formKey;
+    private bool _showEditorModal;
+    private string _symbolsText = "BTCUSDT,ETHUSDT";
+    private string _username = "admin";
+    private string _password = "admin123";
+    private string _token = string.Empty;
+    private string _pageMessage = string.Empty;
+    private bool _pageIsError;
+    private string _editorMessage = string.Empty;
+    private bool _editorIsError;
+
+    protected override async Task OnInitializedAsync() => await Reload();
+
+    private async Task Reload()
+    {
+        var client = HttpFactory.CreateClient();
+        client.BaseAddress = new Uri(Nav.BaseUri);
+        _pageMessage = string.Empty;
+        var list = await SafeGetAsync<List<TradingBot>>(client, "/api/bots");
+        _bots.Clear();
+        if (list is not null)
+        {
+            _bots.AddRange(list);
+        }
+
+        var perfList = await SafeGetAsync<List<BotPerformanceItem>>(client, "/api/bots/performance");
+        _perf.Clear();
+        if (perfList is not null)
+        {
+            foreach (var p in perfList)
+            {
+                _perf[p.BotId] = p;
+            }
+        }
+
+        var signalList = await SafeGetAsync<List<BotSignalDiagnosticsItem>>(client, "/api/bots/signals");
+        _signals.Clear();
+        if (signalList is not null)
+        {
+            foreach (var s in signalList)
+            {
+                _signals[s.BotId] = s;
+            }
+        }
+
+        var analyticsList = await SafeGetAsync<List<BotAnalyticsItem>>(client, "/api/bots/analytics");
+        _analytics.Clear();
+        if (analyticsList is not null)
+        {
+            foreach (var a in analyticsList)
+            {
+                _analytics[a.BotId] = a;
+            }
+        }
+    }
+
+    private async Task<T?> SafeGetAsync<T>(HttpClient client, string path)
+    {
+        try
+        {
+            using var response = await client.GetAsync(path);
+            if (!response.IsSuccessStatusCode)
+            {
+                _pageIsError = true;
+                _pageMessage = $"No se pudo cargar '{path}' (HTTP {(int)response.StatusCode}).";
+                return default;
+            }
+
+            return await response.Content.ReadFromJsonAsync<T>();
+        }
+        catch (Exception ex)
+        {
+            _pageIsError = true;
+            _pageMessage = $"Error cargando '{path}': {ex.Message}";
+            return default;
+        }
+    }
+
+    private async Task Edit(TradingBot bot)
+    {
+        _editingId = bot.Id;
+        _editingName = bot.Name;
+        _form = new CreateOrUpdateBotRequest
+        {
+            Name = bot.Name,
+            BudgetUsdt = bot.BudgetUsdt,
+            MaxPositionPerTradeUsdt = bot.MaxPositionPerTradeUsdt,
+            StopLossPercent = bot.StopLossPercent,
+            TakeProfitPercent = bot.TakeProfitPercent,
+            TakeProfit1Percent = bot.TakeProfit1Percent,
+            TakeProfit1SellPercent = bot.TakeProfit1SellPercent,
+            TakeProfit2Percent = bot.TakeProfit2Percent,
+            TrailingActivationPercent = bot.TrailingActivationPercent,
+            TrailingStopPercent = bot.TrailingStopPercent,
+            MaxHoldingMinutes = bot.MaxHoldingMinutes,
+            MaxDailyLossUsdt = bot.MaxDailyLossUsdt,
+            MaxExposurePercent = bot.MaxExposurePercent,
+            CooldownMinutesAfterLoss = bot.CooldownMinutesAfterLoss,
+            MaxConsecutiveLossTrades = bot.MaxConsecutiveLossTrades
+        };
+        _symbolsText = string.Join(",", bot.Symbols);
+        _formKey++;
+        _showEditorModal = true;
+        StateHasChanged();
+    }
+
+    private async Task Toggle(TradingBot bot, bool start)
+    {
+        var client = HttpFactory.CreateClient();
+        client.BaseAddress = new Uri(Nav.BaseUri);
+        if (!string.IsNullOrWhiteSpace(_token))
+        {
+            client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", _token);
+        }
+        var path = start ? $"/api/bots/{bot.Id}/start" : $"/api/bots/{bot.Id}/stop";
+        await client.PostAsync(path, content: null);
+        await Reload();
+    }
+
+    private async Task Save()
+    {
+        _editorMessage = string.Empty;
+        var client = HttpFactory.CreateClient();
+        client.BaseAddress = new Uri(Nav.BaseUri);
+        if (string.IsNullOrWhiteSpace(_token))
+        {
+            _editorIsError = true;
+            _editorMessage = "Debes hacer Login antes de guardar cambios.";
+            return;
+        }
+
+        client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", _token);
+        _form.Symbols = _symbolsText.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList();
+
+        HttpResponseMessage response;
+        if (_editingId is null)
+        {
+            response = await client.PostAsJsonAsync("/api/bots", _form);
+        }
+        else
+        {
+            response = await client.PutAsJsonAsync($"/api/bots/{_editingId}", _form);
+        }
+
+        if (!response.IsSuccessStatusCode)
+        {
+            _editorIsError = true;
+            var detail = await response.Content.ReadAsStringAsync();
+            _editorMessage = $"No se pudo guardar (HTTP {(int)response.StatusCode}). {detail}";
+            return;
+        }
+
+        await Reload();
+        _pageIsError = false;
+        _pageMessage = _editingId is null
+            ? "Bot creado correctamente."
+            : "Bot actualizado correctamente.";
+        ResetForm();
+    }
+
+    private async Task Login()
+    {
+        var client = HttpFactory.CreateClient();
+        client.BaseAddress = new Uri(Nav.BaseUri);
+        var response = await client.PostAsJsonAsync("/api/auth/login", new LoginRequest
+        {
+            Username = _username,
+            Password = _password
+        });
+        if (response.IsSuccessStatusCode)
+        {
+            var data = await response.Content.ReadFromJsonAsync<LoginResponse>();
+            _token = data?.Token ?? string.Empty;
+            _pageIsError = false;
+            _pageMessage = "Login correcto.";
+        }
+        else
+        {
+            _pageIsError = true;
+            _pageMessage = "Login fallido. Revisa usuario y password.";
+        }
+    }
+
+    private void ResetForm()
+    {
+        _editingId = null;
+        _editingName = string.Empty;
+        _showEditorModal = false;
+        _editorMessage = string.Empty;
+        _form = new CreateOrUpdateBotRequest
+        {
+            Name = string.Empty,
+            BudgetUsdt = 0m,
+            MaxPositionPerTradeUsdt = 0m,
+            StopLossPercent = 2m,
+            TakeProfitPercent = 3m,
+            TakeProfit1Percent = 1.5m,
+            TakeProfit1SellPercent = 50m,
+            TakeProfit2Percent = 3m,
+            TrailingActivationPercent = 1.2m,
+            TrailingStopPercent = 0.8m,
+            MaxHoldingMinutes = 180,
+            MaxDailyLossUsdt = 50m,
+            MaxExposurePercent = 100m,
+            CooldownMinutesAfterLoss = 0,
+            MaxConsecutiveLossTrades = 5
+        };
+        _symbolsText = "BTCUSDT,ETHUSDT";
+        _formKey++;
+    }
+
+    private async Task CloseEditor()
+    {
+        ResetForm();
+        await Task.CompletedTask;
+    }
+
+    private void NewBot()
+    {
+        ResetForm();
+        _showEditorModal = true;
+        StateHasChanged();
+    }
+
+    private static string PnlClass(decimal value) => value >= 0 ? "text-success" : "text-danger";
+    private static string PnlBadgeClass(decimal totalPnl) =>
+        totalPnl > 0m ? "bg-success" : totalPnl < 0m ? "bg-danger" : "bg-secondary";
+    private static string PnlLabel(decimal totalPnl) =>
+        totalPnl > 0m ? "GANANCIA" : totalPnl < 0m ? "PERDIDA" : "NEUTRO";
+    private static string SignalBadgeClass(string label) =>
+        label switch
+        {
+            "BUY_LISTO" => "bg-success",
+            "SELL_LISTO" => "bg-warning text-dark",
+            "DETENIDO" => "bg-secondary",
+            "SIN_DATOS" => "bg-dark",
+            _ => "bg-info text-dark"
+        };
+    private string GetSignalLabel(Guid id) => _signals.TryGetValue(id, out var s) ? s.SignalLabel : "SIN_DATOS";
+    private string GetSignalReason(Guid id) => _signals.TryGetValue(id, out var s) ? $"{s.Reason} Simbolo: {s.ActiveSymbol}" : "Sin diagnostico disponible.";
+    private string GetExitState(Guid id) => _signals.TryGetValue(id, out var s) ? s.ExitState : "SIN_DATOS";
+    private static string ExitBadgeClass(string? state)
+    {
+        if (string.IsNullOrWhiteSpace(state))
+        {
+            return "bg-dark";
+        }
+
+        return
+        state.Contains("TP2_LISTO", StringComparison.Ordinal) ? "bg-success" :
+        state.Contains("TP1_LISTO", StringComparison.Ordinal) ? "bg-primary" :
+        state.Contains("TRAILING_ARMADO", StringComparison.Ordinal) ? "bg-info text-dark" :
+        state.Contains("TIME_STOP_LISTO", StringComparison.Ordinal) ? "bg-warning text-dark" :
+        state.Contains("SENAL_SALIDA", StringComparison.Ordinal) ? "bg-secondary" :
+        state == "MANTENER" ? "bg-light text-dark" :
+        "bg-dark";
+    }
+    private static string EdgeThrottleLabel(TradingBot bot) =>
+        bot.State != BotState.Running && bot.NegativeEdgeCycles >= 6 ? "PAUSADO_EDGE" :
+        bot.NegativeEdgeCycles >= 3 ? $"REDUCIDO ({bot.NegativeEdgeCycles})" :
+        $"NORMAL ({bot.NegativeEdgeCycles})";
+    private static string EdgeThrottleBadgeClass(TradingBot bot) =>
+        bot.State != BotState.Running && bot.NegativeEdgeCycles >= 6 ? "bg-danger" :
+        bot.NegativeEdgeCycles >= 3 ? "bg-warning text-dark" :
+        "bg-success";
+    private string GetSolidityTier(Guid id) => _analytics.TryGetValue(id, out var a) ? a.SolidityTier : "ROJO";
+    private decimal GetSolidityScore(Guid id) => _analytics.TryGetValue(id, out var a) ? a.SolidityScore : 0m;
+    private string GetSolidityReason(Guid id) => _analytics.TryGetValue(id, out var a) ? a.SolidityReason : "Sin datos suficientes.";
+    private string SolidityBadgeClass(Guid id) =>
+        GetSolidityTier(id) switch
+        {
+            "VERDE" => "bg-success",
+            "AMARILLO" => "bg-warning text-dark",
+            _ => "bg-danger"
+        };
+    private decimal GetDailyPnl(Guid id) => _perf.TryGetValue(id, out var p) ? p.DailyPnlUsdt : 0m;
+    private decimal GetTotalPnl(Guid id) => _perf.TryGetValue(id, out var p) ? p.TotalPnlUsdt : 0m;
+}

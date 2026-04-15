@@ -1,0 +1,17 @@
+@inherits LayoutComponentBase
+@inject NavigationManager Nav
+
+<div class="container-fluid p-0">
+    <nav class="navbar navbar-expand-lg navbar-dark bg-dark px-3">
+        <a class="navbar-brand" href="/">Trading Bots</a>
+        <div class="navbar-nav">
+            <a class="nav-link" href="/">Dashboard</a>
+            <a class="nav-link" href="/bots">Bots</a>
+            <a class="nav-link" href="/market">Mercado</a>
+            <a class="nav-link" href="/settings">Exchange</a>
+        </div>
+    </nav>
+    <main class="p-4">
+        @Body
+    </main>
+</div>

@@ -1,0 +1,32 @@
+services:
+  - type: web
+    name: tradingbots-platform-poc
+    runtime: docker
+    plan: free
+    dockerfilePath: ./src/TradingBots.App/Dockerfile
+    autoDeploy: true
+    envVars:
+      - key: ASPNETCORE_ENVIRONMENT
+        value: Production
+      - key: ASPNETCORE_URLS
+        value: http://+:5001
+      - key: PORT
+        value: 5001
+      - key: DB_PROVIDER
+        value: Sqlite
+      - key: Database__Provider
+        value: Sqlite
+      - key: ConnectionStrings__SqliteConnection
+        value: Data Source=tradingbots.db
+      - key: Jwt__Issuer
+        value: TradingBots.App
+      - key: Jwt__Audience
+        value: TradingBots.Client
+      - key: Jwt__SecretKey
+        generateValue: true
+      - key: Jwt__ExpirationMinutes
+        value: 120
+      - key: AdminUser__Username
+        value: admin
+      - key: AdminUser__Password
+        generateValue: true
