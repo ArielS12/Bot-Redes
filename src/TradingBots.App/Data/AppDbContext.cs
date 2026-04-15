@@ -23,7 +23,8 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
         modelBuilder.Entity<TradingBot>(entity =>
         {
             entity.HasKey(x => x.Id);
-            entity.Property(x => x.CreatedAtUtc).HasDefaultValueSql("GETUTCDATE()");
+            // Evita SQL específico de proveedor (GETUTCDATE en SQL Server no existe en PostgreSQL).
+            // El valor por defecto se toma del inicializador del modelo (DateTime.UtcNow).
             entity.Property(x => x.Name).HasMaxLength(120).IsRequired();
             entity.Property(x => x.BudgetUsdt).HasColumnType("decimal(18,2)");
             entity.Property(x => x.MaxPositionPerTradeUsdt).HasColumnType("decimal(18,2)");
