@@ -26,6 +26,11 @@ public interface ITradeMlService
 
     Task RecordExitAsync(Guid botId, string symbol, decimal realizedPnlUsdt, CancellationToken ct = default);
     Task<MlRuntimeSummary> GetSummaryAsync(BinanceConnectionSettings settings, CancellationToken ct = default);
+
+    /// <summary>
+    /// Ejecuta el mismo pipeline de entrenamiento que una evaluacion BUY real y devuelve estado en esta peticion (util para diagnosticos en runtime).
+    /// </summary>
+    Task<MlDiagnosticsView> GetDiagnosticsAsync(BinanceConnectionSettings settings, CancellationToken ct = default);
 }
 
 public sealed class MlBuyEvaluation
@@ -142,6 +147,50 @@ public sealed class TradeMlService(AppDbContext dbContext) : ITradeMlService
             ClosedSamples = closed,
             WinRatePercent = winRate,
             LastTrainedUtc = _lastTrainedUtc
+        };
+    }
+
+    public async Task<MlDiagnosticsView> GetDiagnosticsAsync(BinanceConnectionSettings settings, CancellationToken ct = default)
+    {
+        var minSamples = settings.MlMinSamples <= 0 ? 80 : settings.MlMinSamples;
+        var total = await dbContext.MlTradeObservations.CountAsync(ct);
+        var closedCount = await dbContext.MlTradeObservations.CountAsync(x => x.ClosedAtUtc != null && x.IsWin != null, ct);
+        var wins = await dbContext.MlTradeObservations.CountAsync(x => x.ClosedAtUtc != null && x.IsWin == true, ct);
+        var winRate = closedCount == 0 ? 0m : decimal.Round((wins * 100m) / closedCount, 2);
+
+        var closedRows = await dbContext.MlTradeObservations
+            .Where(x => x.ClosedAtUtc != null && x.IsWin != null)
+            .OrderByDescending(x => x.ClosedAtUtc)
+            .Take(3000)
+            .ToListAsync(ct);
+
+        var ran = false;
+        var note = string.Empty;
+        if (closedRows.Count < minSamples)
+        {
+            note = $"Entrenamiento no ejecutado: {closedRows.Count} observaciones cerradas < minimo {minSamples}.";
+        }
+        else
+        {
+            EnsureTrained(closedRows);
+            ran = true;
+            note = $"Entrenamiento logistic ejecutado en esta peticion sobre {closedRows.Count} filas (tope 3000), igual que en EvaluateBuyAsync.";
+        }
+
+        return new MlDiagnosticsView
+        {
+            Enabled = settings.MlEnabled,
+            ShadowMode = settings.MlShadowMode,
+            MinWinProbability = settings.MlMinWinProbability,
+            MinSamples = minSamples,
+            TotalSamples = total,
+            ClosedSamples = closedCount,
+            WinRatePercent = winRate,
+            TrainingRanThisRequest = ran,
+            ModelReady = _weights is not null,
+            ClosedRowsUsedForTraining = ran ? closedRows.Count : 0,
+            LastTrainedUtc = _lastTrainedUtc,
+            Note = note
         };
     }
 

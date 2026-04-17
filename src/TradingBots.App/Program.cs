@@ -618,6 +618,12 @@ app.MapGet("/api/ml/summary", async (IBinanceSettingsService settingsService, IT
     return Results.Ok(await mlService.GetSummaryAsync(settings, ct));
 });
 
+app.MapGet("/api/ml/diagnostics", async (IBinanceSettingsService settingsService, ITradeMlService mlService, CancellationToken ct) =>
+{
+    var settings = await settingsService.GetActiveSettingsAsync();
+    return Results.Ok(await mlService.GetDiagnosticsAsync(settings, ct));
+});
+
 app.MapGet("/api/audit/orders", async (int take, AppDbContext db) =>
 {
     var safeTake = Math.Clamp(take <= 0 ? 50 : take, 1, 500);

@@ -361,3 +361,19 @@ public sealed class MlRuntimeSummary
     public decimal WinRatePercent { get; set; }
     public DateTime? LastTrainedUtc { get; set; }
 }
+
+public sealed class MlDiagnosticsView
+{
+    public bool Enabled { get; set; }
+    public bool ShadowMode { get; set; }
+    public decimal MinWinProbability { get; set; }
+    public int MinSamples { get; set; }
+    public int TotalSamples { get; set; }
+    public int ClosedSamples { get; set; }
+    public decimal WinRatePercent { get; set; }
+    public bool TrainingRanThisRequest { get; set; }
+    public bool ModelReady { get; set; }
+    public int ClosedRowsUsedForTraining { get; set; }
+    public DateTime? LastTrainedUtc { get; set; }
+    public string Note { get; set; } = string.Empty;
+}
