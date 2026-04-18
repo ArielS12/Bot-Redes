@@ -83,6 +83,38 @@ body {
     margin-bottom: 1rem;
 }
 
+.tb-kpi-tile {
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid var(--tb-border);
+    border-radius: 10px;
+    padding: 0.75rem 0.85rem;
+    min-height: 4.5rem;
+}
+
+.tb-kpi-label {
+    font-size: 0.7rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--tb-text-muted);
+    margin-bottom: 0.35rem;
+}
+
+.tb-kpi-value {
+    font-size: 1.15rem;
+    font-weight: 600;
+    line-height: 1.2;
+    color: var(--tb-text);
+}
+
+.tb-kpi-value.small {
+    font-size: 0.95rem;
+}
+
+.tb-kpi-sub {
+    font-size: 0.7rem;
+    margin-top: 0.25rem;
+}
+
 .tb-main .card {
     background: var(--tb-bg-elevated);
     border: 1px solid var(--tb-border);

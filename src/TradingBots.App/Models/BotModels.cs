@@ -137,6 +137,44 @@ public sealed class DashboardSummary
     public List<BotPerformanceItem> BotPerformance { get; set; } = [];
 }
 
+/// <summary>KPIs de operaciones (filas en Trades) en un rango de fechas calendario UTC.</summary>
+public sealed class TradeKpisSummary
+{
+    /// <summary>Inicio inclusivo del rango (00:00 UTC del primer día).</summary>
+    public DateTime RangeFromUtc { get; set; }
+
+    /// <summary>Fin exclusivo (00:00 UTC del día siguiente al último día incluido).</summary>
+    public DateTime RangeToUtcExclusive { get; set; }
+
+    public int TotalTrades { get; set; }
+    public int BuyCount { get; set; }
+    public int SellCount { get; set; }
+    public decimal TotalRealizedPnlUsdt { get; set; }
+    public decimal GrossVolumeQuoteUsdt { get; set; }
+
+    /// <summary>Ventas con PnL estrictamente positivo.</summary>
+    public int WinningSells { get; set; }
+
+    /// <summary>Ventas con PnL estrictamente negativo.</summary>
+    public int LosingSells { get; set; }
+
+    /// <summary>Maximo PnL en una sola fila (habitualmente cierres en SELL).</summary>
+    public decimal BestTradePnlUsdt { get; set; }
+
+    /// <summary>Minimo PnL en una sola fila.</summary>
+    public decimal WorstTradePnlUsdt { get; set; }
+
+    public List<TradeKpisByBotItem> ByBot { get; set; } = [];
+}
+
+public sealed class TradeKpisByBotItem
+{
+    public Guid BotId { get; set; }
+    public string BotName { get; set; } = string.Empty;
+    public int Trades { get; set; }
+    public decimal RealizedPnlUsdt { get; set; }
+}
+
 public sealed class TradeExecution
 {
     public Guid Id { get; set; } = Guid.NewGuid();

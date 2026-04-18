@@ -42,6 +42,117 @@ else
         </span>
     </div>
 
+    <div class="card mb-4 border-secondary">
+        <div class="card-header d-flex flex-wrap align-items-center justify-content-between gap-2">
+            <span>KPIs de operaciones</span>
+            <div class="d-flex flex-wrap gap-1">
+                <button type="button" class="btn btn-sm btn-outline-light" @onclick="PresetToday">Hoy (UTC)</button>
+                <button type="button" class="btn btn-sm btn-outline-light" @onclick="PresetYesterday">Ayer (UTC)</button>
+                <button type="button" class="btn btn-sm btn-outline-light" @onclick="PresetLast7Days">Últimos 7 días</button>
+                <button type="button" class="btn btn-sm btn-outline-light" @onclick="PresetLast30Days">Últimos 30 días</button>
+            </div>
+        </div>
+        <div class="card-body">
+            <p class="small text-muted mb-3">
+                Filtra por <strong>día único</strong> (misma fecha inicio y fin) o por <strong>rango</strong>. Las fechas se interpretan en <strong>UTC</strong> (medianoche a medianoche), igual que <code>ExecutedAtUtc</code> en base de datos.
+            </p>
+            <div class="row g-2 align-items-end mb-3">
+                <div class="col-sm-auto">
+                    <label class="form-label mb-0">Desde</label>
+                    <input class="form-control" type="date" @bind="_kpiDateFrom" />
+                </div>
+                <div class="col-sm-auto">
+                    <label class="form-label mb-0">Hasta</label>
+                    <input class="form-control" type="date" @bind="_kpiDateTo" />
+                </div>
+                <div class="col-sm-auto">
+                    <button type="button" class="btn btn-primary" disabled="@_kpiLoading" @onclick="ApplyKpiRange">
+                        @if (_kpiLoading)
+                        {
+                            <span class="spinner-border spinner-border-sm" role="status"></span>
+                        }
+                        else
+                        {
+                            <span>Aplicar</span>
+                        }
+                    </button>
+                </div>
+            </div>
+            @if (!string.IsNullOrWhiteSpace(_kpiError))
+            {
+                <div class="alert alert-warning py-2">@_kpiError</div>
+            }
+            else if (_kpis is not null)
+            {
+                <div class="row g-3 mb-3">
+                    <div class="col-6 col-md-4 col-lg-2">
+                        <div class="tb-kpi-tile">
+                            <div class="tb-kpi-label">Operaciones</div>
+                            <div class="tb-kpi-value">@_kpis.TotalTrades</div>
+                        </div>
+                    </div>
+                    <div class="col-6 col-md-4 col-lg-2">
+                        <div class="tb-kpi-tile">
+                            <div class="tb-kpi-label">Compras / Ventas</div>
+                            <div class="tb-kpi-value small">@_kpis.BuyCount / @_kpis.SellCount</div>
+                        </div>
+                    </div>
+                    <div class="col-6 col-md-4 col-lg-2">
+                        <div class="tb-kpi-tile">
+                            <div class="tb-kpi-label">PnL realizado</div>
+                            <div class="tb-kpi-value @PnlClass(_kpis.TotalRealizedPnlUsdt)">@_kpis.TotalRealizedPnlUsdt.ToString("0.00")</div>
+                        </div>
+                    </div>
+                    <div class="col-6 col-md-4 col-lg-2">
+                        <div class="tb-kpi-tile">
+                            <div class="tb-kpi-label">Volumen (≈ quote)</div>
+                            <div class="tb-kpi-value">@_kpis.GrossVolumeQuoteUsdt.ToString("0.00")</div>
+                        </div>
+                    </div>
+                    <div class="col-6 col-md-4 col-lg-2">
+                        <div class="tb-kpi-tile">
+                            <div class="tb-kpi-label">Ventas ganadoras / perdedoras</div>
+                            <div class="tb-kpi-value small">@_kpis.WinningSells / @_kpis.LosingSells</div>
+                            @if (_kpis.WinningSells + _kpis.LosingSells > 0)
+                            {
+                                <div class="tb-kpi-sub text-muted">Win rate ventas: @FormatWinRate(_kpis)</div>
+                            }
+                        </div>
+                    </div>
+                    <div class="col-6 col-md-4 col-lg-2">
+                        <div class="tb-kpi-tile">
+                            <div class="tb-kpi-label">Mejor / peor trade</div>
+                            <div class="tb-kpi-value small @PnlClass(_kpis.BestTradePnlUsdt)">@_kpis.BestTradePnlUsdt.ToString("0.00")</div>
+                            <div class="tb-kpi-value small @PnlClass(_kpis.WorstTradePnlUsdt)">@_kpis.WorstTradePnlUsdt.ToString("0.00")</div>
+                        </div>
+                    </div>
+                </div>
+                <p class="small text-muted mb-2">
+                    Rango UTC: @FormatUtc(_kpis.RangeFromUtc) → antes de @FormatUtc(_kpis.RangeToUtcExclusive)
+                </p>
+                @if (_kpis.ByBot.Count > 0)
+                {
+                    <h6 class="mt-3">Por bot</h6>
+                    <table class="table table-sm table-striped mb-0">
+                        <thead>
+                            <tr><th>Bot</th><th>Ops</th><th>PnL realizado</th></tr>
+                        </thead>
+                        <tbody>
+                            @foreach (var row in _kpis.ByBot)
+                            {
+                                <tr>
+                                    <td>@row.BotName</td>
+                                    <td>@row.Trades</td>
+                                    <td class="@PnlClass(row.RealizedPnlUsdt)">@row.RealizedPnlUsdt.ToString("0.00") USDT</td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                }
+            }
+        </div>
+    </div>
+
     <h4>Mercado</h4>
     <table class="table table-sm table-striped">
         <thead>
@@ -99,9 +210,19 @@ else
 
 @code {
     private DashboardSummary? _summary;
+    private TradeKpisSummary? _kpis;
     private string _errorMessage = string.Empty;
+    private string _kpiError = string.Empty;
+    private bool _kpiLoading;
+    private DateTime _kpiDateFrom = DateTime.UtcNow.Date;
+    private DateTime _kpiDateTo = DateTime.UtcNow.Date;
 
     protected override async Task OnInitializedAsync()
+    {
+        await Task.WhenAll(LoadSummaryAsync(), LoadKpisAsync());
+    }
+
+    private async Task LoadSummaryAsync()
     {
         var client = HttpFactory.CreateClient();
         client.BaseAddress = new Uri(Nav.BaseUri);
@@ -124,6 +245,89 @@ else
         {
             _errorMessage = $"Error cargando dashboard: {ex.Message}";
         }
+    }
+
+    private async Task ApplyKpiRange() => await LoadKpisAsync();
+
+    private async Task PresetToday()
+    {
+        var u = DateTime.UtcNow.Date;
+        _kpiDateFrom = u;
+        _kpiDateTo = u;
+        await LoadKpisAsync();
+    }
+
+    private async Task PresetYesterday()
+    {
+        var u = DateTime.UtcNow.Date.AddDays(-1);
+        _kpiDateFrom = u;
+        _kpiDateTo = u;
+        await LoadKpisAsync();
+    }
+
+    private async Task PresetLast7Days()
+    {
+        var to = DateTime.UtcNow.Date;
+        _kpiDateFrom = to.AddDays(-6);
+        _kpiDateTo = to;
+        await LoadKpisAsync();
+    }
+
+    private async Task PresetLast30Days()
+    {
+        var to = DateTime.UtcNow.Date;
+        _kpiDateFrom = to.AddDays(-29);
+        _kpiDateTo = to;
+        await LoadKpisAsync();
+    }
+
+    private static string FormatUtc(DateTime utc) =>
+        utc.Kind == DateTimeKind.Utc
+            ? utc.ToString("yyyy-MM-dd HH:mm'Z'", CultureInfo.InvariantCulture)
+            : DateTime.SpecifyKind(utc, DateTimeKind.Utc).ToString("yyyy-MM-dd HH:mm'Z'", CultureInfo.InvariantCulture);
+
+    private async Task LoadKpisAsync()
+    {
+        _kpiLoading = true;
+        _kpiError = string.Empty;
+        try
+        {
+            var fromStr = _kpiDateFrom.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+            var toStr = _kpiDateTo.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+            var client = HttpFactory.CreateClient();
+            client.BaseAddress = new Uri(Nav.BaseUri);
+            var url = $"/api/dashboard/trade-kpis?dateFrom={Uri.EscapeDataString(fromStr)}&dateTo={Uri.EscapeDataString(toStr)}";
+            using var response = await client.GetAsync(url);
+            if (!response.IsSuccessStatusCode)
+            {
+                var body = await response.Content.ReadAsStringAsync();
+                _kpis = null;
+                _kpiError = $"No se pudieron cargar los KPIs (HTTP {(int)response.StatusCode}). {body}";
+                return;
+            }
+
+            _kpis = await response.Content.ReadFromJsonAsync<TradeKpisSummary>();
+        }
+        catch (Exception ex)
+        {
+            _kpis = null;
+            _kpiError = $"Error: {ex.Message}";
+        }
+        finally
+        {
+            _kpiLoading = false;
+        }
+    }
+
+    private static string FormatWinRate(TradeKpisSummary k)
+    {
+        var d = k.WinningSells + k.LosingSells;
+        if (d <= 0)
+        {
+            return "—";
+        }
+
+        return $"{100m * k.WinningSells / d:0.0}%";
     }
 
     private static string PnlClass(decimal value) => value >= 0 ? "text-success" : "text-danger";

@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.EntityFrameworkCore;
@@ -723,6 +724,70 @@ app.MapGet("/api/dashboard/summary", async (IBotService botService, IBinanceMark
             DailyPnlUsdt = (dailyMap.TryGetValue(b.Id, out var v) ? v : 0m) + b.UnrealizedPnlUsdt,
             TotalPnlUsdt = b.RealizedPnlUsdt + b.UnrealizedPnlUsdt
         }).OrderByDescending(x => x.TotalPnlUsdt).ToList()
+    };
+
+    return Results.Ok(summary);
+});
+
+app.MapGet("/api/dashboard/trade-kpis", async (string? dateFrom, string? dateTo, AppDbContext db) =>
+{
+    if (string.IsNullOrWhiteSpace(dateFrom) || string.IsNullOrWhiteSpace(dateTo))
+    {
+        return Results.BadRequest(new { error = "Indica dateFrom y dateTo en formato yyyy-MM-dd (calendario UTC)." });
+    }
+
+    if (!DateOnly.TryParse(dateFrom, CultureInfo.InvariantCulture, DateTimeStyles.None, out var fromDay) ||
+        !DateOnly.TryParse(dateTo, CultureInfo.InvariantCulture, DateTimeStyles.None, out var toDay))
+    {
+        return Results.BadRequest(new { error = "Fechas invalidas. Usa yyyy-MM-dd." });
+    }
+
+    if (fromDay > toDay)
+    {
+        (fromDay, toDay) = (toDay, fromDay);
+    }
+
+    var rangeStart = new DateTime(fromDay.Year, fromDay.Month, fromDay.Day, 0, 0, 0, DateTimeKind.Utc);
+    var rangeEndExclusive = new DateTime(toDay.Year, toDay.Month, toDay.Day, 0, 0, 0, DateTimeKind.Utc).AddDays(1);
+
+    var rows = await (
+        from t in db.Trades.AsNoTracking()
+        join b in db.Bots.AsNoTracking() on t.BotId equals b.Id
+        where t.ExecutedAtUtc >= rangeStart && t.ExecutedAtUtc < rangeEndExclusive
+        select new { t.Side, t.RealizedPnlUsdt, t.Price, t.Quantity, b.Id, b.Name }
+    ).ToListAsync();
+
+    var sells = rows.Where(x => string.Equals(x.Side, "SELL", StringComparison.OrdinalIgnoreCase)).ToList();
+    var winning = sells.Count(x => x.RealizedPnlUsdt > 0m);
+    var losing = sells.Count(x => x.RealizedPnlUsdt < 0m);
+    var pnlList = rows.Select(x => x.RealizedPnlUsdt).ToList();
+
+    var byBot = rows
+        .GroupBy(x => new { x.Id, x.Name })
+        .Select(g => new TradeKpisByBotItem
+        {
+            BotId = g.Key.Id,
+            BotName = g.Key.Name,
+            Trades = g.Count(),
+            RealizedPnlUsdt = g.Sum(x => x.RealizedPnlUsdt)
+        })
+        .OrderByDescending(x => x.RealizedPnlUsdt)
+        .ToList();
+
+    var summary = new TradeKpisSummary
+    {
+        RangeFromUtc = rangeStart,
+        RangeToUtcExclusive = rangeEndExclusive,
+        TotalTrades = rows.Count,
+        BuyCount = rows.Count(x => string.Equals(x.Side, "BUY", StringComparison.OrdinalIgnoreCase)),
+        SellCount = sells.Count,
+        TotalRealizedPnlUsdt = rows.Sum(x => x.RealizedPnlUsdt),
+        GrossVolumeQuoteUsdt = rows.Sum(x => x.Price * x.Quantity),
+        WinningSells = winning,
+        LosingSells = losing,
+        BestTradePnlUsdt = pnlList.Count > 0 ? pnlList.Max() : 0m,
+        WorstTradePnlUsdt = pnlList.Count > 0 ? pnlList.Min() : 0m,
+        ByBot = byBot
     };
 
     return Results.Ok(summary);
