@@ -19,11 +19,16 @@ public sealed class AutoTraderService(
         "USDT", "USDC", "FDUSD", "USD1", "BUSD", "TUSD", "USDP", "DAI"
     };
 
+    /// <summary>Ventana alineada con el ciclo (~10s) y batches del analista; antes 5 min dejaba fuera sugerencias validas.</summary>
+    private const int SuggestionTtlMinutes = 12;
+
+    /// <summary>Tras parada por inactividad del supervisor, reciclar antes que el cooldown completo (p. ej. 7 min).</summary>
+    private static readonly TimeSpan RecycleCooldownAfterSupervisorInactivity = TimeSpan.FromSeconds(90);
+
     public async Task<int> CreateBotsFromSuggestionsAsync()
     {
         var now = DateTime.UtcNow;
-        var suggestionTtlMinutes = 5;
-        var minSuggestionTime = now.AddMinutes(-suggestionTtlMinutes);
+        var minSuggestionTime = now.AddMinutes(-SuggestionTtlMinutes);
         var suggestions = await advisorService.GetLatestSuggestionsAsync(30);
         var symbolBias = await BuildSymbolBiasMapAsync(now);
         var candidates = suggestions
@@ -121,7 +126,8 @@ public sealed class AutoTraderService(
             if (recyclable is not null)
             {
                 var stoppedAge = now - recyclable.UpdatedAtUtc;
-                if (stoppedAge < minStoppedBeforeReactivate)
+                var requiredCooldown = ResolveRecycleCooldown(recyclable, minStoppedBeforeReactivate);
+                if (stoppedAge < requiredCooldown)
                 {
                     continue;
                 }
@@ -234,4 +240,21 @@ public sealed class AutoTraderService(
 
         return map;
     }
+
+    private static TimeSpan ResolveRecycleCooldown(TradingBot stoppedBot, TimeSpan configuredReactivate)
+    {
+        if (IsSupervisorInactivityStop(stoppedBot.LastExecutionError))
+        {
+            return TimeSpan.FromTicks(Math.Min(
+                RecycleCooldownAfterSupervisorInactivity.Ticks,
+                configuredReactivate.Ticks));
+        }
+
+        return configuredReactivate;
+    }
+
+    private static bool IsSupervisorInactivityStop(string? lastError) =>
+        !string.IsNullOrWhiteSpace(lastError) &&
+        lastError.Contains("Supervisor:", StringComparison.OrdinalIgnoreCase) &&
+        lastError.Contains("inactividad", StringComparison.OrdinalIgnoreCase);
 }

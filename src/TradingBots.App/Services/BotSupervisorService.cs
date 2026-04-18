@@ -12,6 +12,7 @@ public interface IBotSupervisorService
 public sealed class BotSupervisorService(
     AppDbContext dbContext,
     IBinanceSettingsService settingsService,
+    IMarketAdvisorService advisorService,
     ILogger<BotSupervisorService> logger) : IBotSupervisorService
 {
     public async Task<int> StopInactiveAutoBotsAsync(CancellationToken ct = default)
@@ -22,9 +23,10 @@ public sealed class BotSupervisorService(
             return 0;
         }
 
-        var inactiveMinutes = Math.Clamp(settings.SupervisorInactiveMinutes <= 0 ? 120 : settings.SupervisorInactiveMinutes, 60, 240);
+        var inactiveMinutes = Math.Clamp(settings.SupervisorInactiveMinutes <= 0 ? 120 : settings.SupervisorInactiveMinutes, 60, 300);
         var inactiveWindow = TimeSpan.FromMinutes(inactiveMinutes);
         var now = DateTime.UtcNow;
+        var recentAdvisorBuys = await BuildRecentBuySymbolsAsync(now);
         var candidates = await dbContext.Bots
             .Where(x => x.IsAutoManaged && x.State == BotState.Running)
             .ToListAsync(ct);
@@ -45,6 +47,13 @@ public sealed class BotSupervisorService(
         foreach (var bot in candidates)
         {
             if (bot.PositionQuantity > 0m)
+            {
+                continue;
+            }
+
+            var sym = bot.Symbols.FirstOrDefault() ?? string.Empty;
+            if (!string.IsNullOrWhiteSpace(sym) &&
+                recentAdvisorBuys.Contains(sym))
             {
                 continue;
             }
@@ -71,5 +80,18 @@ public sealed class BotSupervisorService(
         }
 
         return stopped;
+    }
+
+    /// <summary>
+    /// Simbolos con BUY en las ultimas sugerencias del analista (no parar por inactividad si sigue recomendado).
+    /// </summary>
+    private async Task<HashSet<string>> BuildRecentBuySymbolsAsync(DateTime nowUtc)
+    {
+        var fresh = await advisorService.GetLatestSuggestionsAsync(24);
+        var cutoff = nowUtc.AddMinutes(-15);
+        return fresh
+            .Where(x => x.Signal.Equals("BUY", StringComparison.OrdinalIgnoreCase) && x.CreatedAtUtc >= cutoff)
+            .Select(x => x.Symbol)
+            .ToHashSet(StringComparer.Ordinal);
     }
 }
