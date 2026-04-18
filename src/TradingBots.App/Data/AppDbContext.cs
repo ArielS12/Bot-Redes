@@ -50,6 +50,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             entity.Property(x => x.RollingExpectancyUsdt).HasColumnType("decimal(18,4)");
             entity.Property(x => x.NegativeEdgeCycles).HasDefaultValue(0);
             entity.Property(x => x.OutOfTopCycles).HasDefaultValue(0);
+            entity.Property(x => x.MlRoundTripRealizedUsdt).HasColumnType("decimal(18,4)");
             entity.Property(x => x.StrategyType).HasConversion<int>();
 
             entity.Property(x => x.Symbols)
@@ -130,6 +131,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             entity.Property(x => x.PriceChangePercent24h).HasColumnType("decimal(10,6)");
             entity.Property(x => x.QuoteVolume24h).HasColumnType("decimal(18,2)");
             entity.Property(x => x.RealizedPnlUsdt).HasColumnType("decimal(18,4)");
+            entity.Property(x => x.IsWin).IsRequired(false);
             entity.HasIndex(x => new { x.BotId, x.Symbol, x.EntryAtUtc });
             entity.HasIndex(x => x.ClosedAtUtc);
         });

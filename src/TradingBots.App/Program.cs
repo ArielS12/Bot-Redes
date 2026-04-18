@@ -2,6 +2,7 @@ using System.Text;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
+using Npgsql.EntityFrameworkCore.PostgreSQL.Infrastructure;
 using TradingBots.App.Data;
 using TradingBots.App.Components;
 using TradingBots.App.Models;
@@ -286,6 +287,10 @@ using (var scope = app.Services.CreateScope())
         BEGIN
             ALTER TABLE [Bots] ADD [OutOfTopCycles] int NOT NULL CONSTRAINT DF_Bots_OutOfTopCycles DEFAULT(0);
         END
+        IF COL_LENGTH('Bots', 'MlRoundTripRealizedUsdt') IS NULL
+        BEGIN
+            ALTER TABLE [Bots] ADD [MlRoundTripRealizedUsdt] decimal(18,4) NOT NULL CONSTRAINT DF_Bots_MlRoundTripRealizedUsdt DEFAULT(0);
+        END
         IF COL_LENGTH('Bots', 'CreatedAtUtc') IS NULL
         BEGIN
             ALTER TABLE [Bots] ADD [CreatedAtUtc] datetime2 NOT NULL CONSTRAINT DF_Bots_CreatedAtUtc DEFAULT(GETUTCDATE());
@@ -380,17 +385,27 @@ using (var scope = app.Services.CreateScope())
         """);
     }
 
+    if (db.Database.IsNpgsql())
+    {
+        await db.Database.ExecuteSqlRawAsync(
+            """ALTER TABLE "Bots" ADD COLUMN IF NOT EXISTS "MlRoundTripRealizedUsdt" numeric(18,4) NOT NULL DEFAULT 0;""");
+        await db.Database.ExecuteSqlRawAsync(
+            """ALTER TABLE "MlTradeObservations" ALTER COLUMN "IsWin" DROP NOT NULL;""");
+        await db.Database.ExecuteSqlRawAsync(
+            """UPDATE "MlTradeObservations" SET "IsWin" = NULL WHERE "ClosedAtUtc" IS NULL;""");
+    }
+
     if (!await db.Bots.AnyAsync())
     {
         db.Bots.Add(new TradingBot
         {
-            Name = "Momentum-BTC-ETH",
+            Name = "Momentum-BTC",
             BudgetUsdt = 1000m,
             MaxPositionPerTradeUsdt = 100m,
             StopLossPercent = 1.8m,
             TakeProfitPercent = 3.2m,
             MaxDailyLossUsdt = 60m,
-            Symbols = ["BTCUSDT", "ETHUSDT"],
+            Symbols = ["BTCUSDT"],
             State = BotState.Running
         });
         await db.SaveChangesAsync();

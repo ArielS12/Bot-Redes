@@ -96,6 +96,13 @@ public sealed class TradeMlService(AppDbContext dbContext) : ITradeMlService
         decimal predictedWinProbability,
         CancellationToken ct = default)
     {
+        var hasOpen = await dbContext.MlTradeObservations
+            .AnyAsync(x => x.BotId == botId && x.Symbol == symbol && x.ClosedAtUtc == null, ct);
+        if (hasOpen)
+        {
+            return;
+        }
+
         dbContext.MlTradeObservations.Add(new MlTradeObservation
         {
             BotId = botId,
@@ -109,7 +116,8 @@ public sealed class TradeMlService(AppDbContext dbContext) : ITradeMlService
             MacdHistogram = decimal.Round(snapshot.MacdHistogram, 8),
             RelativeVolume = decimal.Round(snapshot.RelativeVolume, 6),
             PriceChangePercent24h = decimal.Round(ticker.PriceChangePercent24h, 6),
-            QuoteVolume24h = decimal.Round(ticker.QuoteVolume24h, 2)
+            QuoteVolume24h = decimal.Round(ticker.QuoteVolume24h, 2),
+            IsWin = null
         });
         await dbContext.SaveChangesAsync(ct);
     }

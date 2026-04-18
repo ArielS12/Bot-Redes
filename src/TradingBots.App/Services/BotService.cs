@@ -253,6 +253,7 @@ public sealed class BotService(
 
                     if (fill is not null && fill.ExecutedQuantity > 0 && fill.AveragePrice > 0)
                     {
+                        var positionQtyBeforeBuy = bot.PositionQuantity;
                         var previousCost = bot.PositionQuantity * bot.AverageEntryPrice;
                         var fillCost = fill.ExecutedQuantity * fill.AveragePrice;
                         var newQuantity = bot.PositionQuantity + fill.ExecutedQuantity;
@@ -279,8 +280,9 @@ public sealed class BotService(
                             RealizedPnlUsdt = 0m,
                             ExecutedAtUtc = DateTime.UtcNow
                         });
-                        if (mlEnabled)
+                        if (mlEnabled && positionQtyBeforeBuy == 0m)
                         {
+                            bot.MlRoundTripRealizedUsdt = 0m;
                             await tradeMlService.RecordEntryAsync(
                                 bot.Id,
                                 symbol,
@@ -396,7 +398,13 @@ public sealed class BotService(
                     });
                     if (mlEnabled)
                     {
-                        await tradeMlService.RecordExitAsync(bot.Id, activeSymbol, realized);
+                        bot.MlRoundTripRealizedUsdt += realized;
+                        var positionClosed = bot.PositionQuantity <= 0m;
+                        if (positionClosed)
+                        {
+                            await tradeMlService.RecordExitAsync(bot.Id, activeSymbol, bot.MlRoundTripRealizedUsdt);
+                            bot.MlRoundTripRealizedUsdt = 0m;
+                        }
                     }
                 }
                 else if (realTradingEnabled)

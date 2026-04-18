@@ -66,6 +66,11 @@ public sealed class TradingBot
     public DateTime? LastAutoScaleUtc { get; set; }
     public DateTime? LastRiskAdjustmentUtc { get; set; }
     public int OutOfTopCycles { get; set; }
+
+    /// <summary>
+    /// Suma del realized PnL de las ventas del ciclo actual (misma observacion ML hasta cierre total).
+    /// </summary>
+    public decimal MlRoundTripRealizedUsdt { get; set; }
 }
 
 public sealed class CreateOrUpdateBotRequest
