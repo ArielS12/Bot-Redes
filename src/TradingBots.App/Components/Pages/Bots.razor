@@ -1,37 +1,26 @@
 @page "/bots"
 @inject IHttpClientFactory HttpFactory
 @inject NavigationManager Nav
+@inject ClientAuthSession Auth
+@implements IDisposable
 
 <PageTitle>Bots</PageTitle>
-<h1>Configuracion de bots</h1>
-<button class="btn btn-primary mb-3" type="button" @onclick="NewBot">Nuevo bot</button>
+<div class="d-flex flex-wrap align-items-center justify-content-between gap-2 mb-4">
+    <h1 class="tb-page-title mb-0">Bots</h1>
+    <button class="btn btn-primary" type="button" @onclick="NewBot">Nuevo bot</button>
+</div>
+@if (!Auth.IsAuthenticated)
+{
+    <div class="alert alert-secondary border-0 shadow-sm mb-4" role="status">
+        <a href="/login">Inicia sesión</a> para crear o editar bots y para iniciar o detener operaciones.
+    </div>
+}
 @if (!string.IsNullOrWhiteSpace(_pageMessage))
 {
     <div class="alert @(_pageIsError ? "alert-danger" : "alert-success")" role="alert">
         @_pageMessage
     </div>
 }
-
-<div class="card mb-3">
-    <div class="card-body">
-        <h6>Sesion administrador (JWT)</h6>
-        <div class="row g-2">
-            <div class="col-md-4">
-                <input class="form-control" @bind="_username" placeholder="Usuario" />
-            </div>
-            <div class="col-md-4">
-                <input class="form-control" @bind="_password" placeholder="Password" type="password" />
-            </div>
-            <div class="col-md-4">
-                <button class="btn btn-dark" @onclick="Login">Login</button>
-                @if (!string.IsNullOrWhiteSpace(_token))
-                {
-                    <span class="ms-2 text-success">Autenticado</span>
-                }
-            </div>
-        </div>
-    </div>
-</div>
 
 <div class="row">
     <div class="col-12">
@@ -208,15 +197,25 @@
     private int _formKey;
     private bool _showEditorModal;
     private string _symbolsText = "BTCUSDT,ETHUSDT";
-    private string _username = "admin";
-    private string _password = "admin123";
-    private string _token = string.Empty;
     private string _pageMessage = string.Empty;
     private bool _pageIsError;
     private string _editorMessage = string.Empty;
     private bool _editorIsError;
 
-    protected override async Task OnInitializedAsync() => await Reload();
+    protected override async Task OnInitializedAsync()
+    {
+        Auth.SessionChanged += OnAuthChanged;
+        await Reload();
+    }
+
+    private void OnAuthChanged()
+    {
+        _ = InvokeAsync(async () =>
+        {
+            await Reload();
+            StateHasChanged();
+        });
+    }
 
     private async Task Reload()
     {
@@ -315,10 +314,7 @@
     {
         var client = HttpFactory.CreateClient();
         client.BaseAddress = new Uri(Nav.BaseUri);
-        if (!string.IsNullOrWhiteSpace(_token))
-        {
-            client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", _token);
-        }
+        Auth.ApplyBearer(client);
         var path = start ? $"/api/bots/{bot.Id}/start" : $"/api/bots/{bot.Id}/stop";
         await client.PostAsync(path, content: null);
         await Reload();
@@ -329,14 +325,14 @@
         _editorMessage = string.Empty;
         var client = HttpFactory.CreateClient();
         client.BaseAddress = new Uri(Nav.BaseUri);
-        if (string.IsNullOrWhiteSpace(_token))
+        if (!Auth.IsAuthenticated)
         {
             _editorIsError = true;
-            _editorMessage = "Debes hacer Login antes de guardar cambios.";
+            _editorMessage = "Debes iniciar sesión antes de guardar cambios.";
             return;
         }
 
-        client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", _token);
+        Auth.ApplyBearer(client);
         _form.Symbols = _symbolsText.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList();
 
         HttpResponseMessage response;
@@ -363,29 +359,6 @@
             ? "Bot creado correctamente."
             : "Bot actualizado correctamente.";
         ResetForm();
-    }
-
-    private async Task Login()
-    {
-        var client = HttpFactory.CreateClient();
-        client.BaseAddress = new Uri(Nav.BaseUri);
-        var response = await client.PostAsJsonAsync("/api/auth/login", new LoginRequest
-        {
-            Username = _username,
-            Password = _password
-        });
-        if (response.IsSuccessStatusCode)
-        {
-            var data = await response.Content.ReadFromJsonAsync<LoginResponse>();
-            _token = data?.Token ?? string.Empty;
-            _pageIsError = false;
-            _pageMessage = "Login correcto.";
-        }
-        else
-        {
-            _pageIsError = true;
-            _pageMessage = "Login fallido. Revisa usuario y password.";
-        }
     }
 
     private void ResetForm()
@@ -482,4 +455,9 @@
         };
     private decimal GetDailyPnl(Guid id) => _perf.TryGetValue(id, out var p) ? p.DailyPnlUsdt : 0m;
     private decimal GetTotalPnl(Guid id) => _perf.TryGetValue(id, out var p) ? p.TotalPnlUsdt : 0m;
+
+    public void Dispose()
+    {
+        Auth.SessionChanged -= OnAuthChanged;
+    }
 }

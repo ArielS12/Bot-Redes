@@ -1,0 +1,127 @@
+@page "/login"
+@layout EmptyLayout
+@inject IHttpClientFactory HttpFactory
+@inject NavigationManager Nav
+@inject ClientAuthSession Auth
+@implements IDisposable
+@using System.ComponentModel.DataAnnotations
+
+<PageTitle>Iniciar sesión</PageTitle>
+
+<div class="tb-login-card shadow-lg">
+    <div class="tb-login-brand mb-4">
+        <span class="tb-login-logo" aria-hidden="true"></span>
+        <div>
+            <h1 class="h4 mb-0">Trading Bots</h1>
+            <p class="text-muted small mb-0">Panel de control</p>
+        </div>
+    </div>
+
+    @if (!string.IsNullOrWhiteSpace(_message))
+    {
+        <div class="alert @(_isError ? "alert-danger" : "alert-success") py-2" role="alert">@_message</div>
+    }
+
+    <EditForm Model="_form" OnValidSubmit="Submit" OnInvalidSubmit="OnInvalid">
+        <DataAnnotationsValidator />
+        <div class="mb-3">
+            <label class="form-label">Usuario</label>
+            <InputText class="form-control" @bind-Value="_form.Username" autocomplete="username" />
+        </div>
+        <div class="mb-3">
+            <label class="form-label">Contraseña</label>
+            <InputText class="form-control" @bind-Value="_form.Password" type="password" autocomplete="current-password" />
+        </div>
+        <div class="form-check mb-4">
+            <InputCheckbox class="form-check-input" @bind-Value="_rememberMe" id="remember" />
+            <label class="form-check-label" for="remember">Recordarme en este dispositivo</label>
+        </div>
+        <button class="btn btn-primary w-100 py-2" type="submit" disabled="@_busy">
+            @if (_busy)
+            {
+                <span class="spinner-border spinner-border-sm me-1" role="status"></span>
+            }
+            Entrar
+        </button>
+    </EditForm>
+    <p class="text-muted small mt-4 mb-0 text-center">
+        Sin “recordarme”, la sesión caduca según la configuración del servidor (típicamente unas horas).
+    </p>
+</div>
+
+@code {
+    private readonly LoginFormModel _form = new();
+    private bool _rememberMe = true;
+    private bool _busy;
+    private string _message = string.Empty;
+    private bool _isError;
+
+    protected override void OnInitialized()
+    {
+        Auth.SessionChanged += OnAuthChanged;
+    }
+
+    private void OnAuthChanged()
+    {
+        if (Auth.IsAuthenticated)
+        {
+            _ = InvokeAsync(() => Nav.NavigateTo("/"));
+        }
+    }
+
+    private void OnInvalid()
+    {
+        _isError = true;
+        _message = "Completa usuario y contraseña.";
+    }
+
+    private async Task Submit()
+    {
+        _busy = true;
+        _message = string.Empty;
+        try
+        {
+            var client = HttpFactory.CreateClient();
+            client.BaseAddress = new Uri(Nav.BaseUri);
+            var response = await client.PostAsJsonAsync("/api/auth/login", new LoginRequest
+            {
+                Username = _form.Username.Trim(),
+                Password = _form.Password,
+                RememberMe = _rememberMe
+            });
+
+            if (response.IsSuccessStatusCode)
+            {
+                var data = await response.Content.ReadFromJsonAsync<LoginResponse>();
+                if (data is not null)
+                {
+                    await Auth.SetSessionAsync(data, _rememberMe);
+                    _isError = false;
+                    Nav.NavigateTo("/");
+                    return;
+                }
+            }
+
+            _isError = true;
+            _message = "Credenciales incorrectas.";
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    public void Dispose()
+    {
+        Auth.SessionChanged -= OnAuthChanged;
+    }
+
+    private sealed class LoginFormModel
+    {
+        [Required(ErrorMessage = "Indica el usuario.")]
+        public string Username { get; set; } = string.Empty;
+
+        [Required(ErrorMessage = "Indica la contraseña.")]
+        public string Password { get; set; } = string.Empty;
+    }
+}

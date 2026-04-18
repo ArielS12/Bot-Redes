@@ -7,6 +7,8 @@ public sealed class JwtSettings
     public string Audience { get; set; } = "TradingBots.Client";
     public string SecretKey { get; set; } = "CHANGE_ME_SUPER_SECRET_KEY_32_CHARS";
     public int ExpirationMinutes { get; set; } = 120;
+    /// <summary>Duración del JWT cuando el usuario marca "Recordarme en este dispositivo".</summary>
+    public int RememberMeExpirationDays { get; set; } = 14;
 }
 
 public sealed class AdminUserSettings

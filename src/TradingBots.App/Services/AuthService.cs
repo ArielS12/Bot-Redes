@@ -27,7 +27,9 @@ public sealed class AuthService(
             return null;
         }
 
-        var expiresAt = DateTime.UtcNow.AddMinutes(_jwt.ExpirationMinutes);
+        var expiresAt = request.RememberMe
+            ? DateTime.UtcNow.AddDays(Math.Max(1, _jwt.RememberMeExpirationDays))
+            : DateTime.UtcNow.AddMinutes(_jwt.ExpirationMinutes);
         var claims = new List<Claim>
         {
             new(ClaimTypes.Name, request.Username),

@@ -1,0 +1,11 @@
+@inject ClientAuthSession Auth
+
+@code {
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            await Auth.InitializeFromBrowserAsync();
+        }
+    }
+}

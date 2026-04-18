@@ -1,9 +1,11 @@
 @page "/settings"
 @inject IHttpClientFactory HttpFactory
 @inject NavigationManager Nav
+@inject ClientAuthSession Auth
+@implements IDisposable
 
 <PageTitle>Exchange</PageTitle>
-<h1>Configuracion de Binance</h1>
+<h1 class="tb-page-title">Exchange</h1>
 @if (!string.IsNullOrWhiteSpace(_message))
 {
     <div class="alert @(_isError ? "alert-danger" : "alert-success")" role="alert">
@@ -26,26 +28,12 @@
     </div>
 }
 
-<div class="card mb-3">
-    <div class="card-body">
-        <h6>Sesion administrador (JWT)</h6>
-        <div class="row g-2">
-            <div class="col-md-4">
-                <input class="form-control" @bind="_username" placeholder="Usuario" />
-            </div>
-            <div class="col-md-4">
-                <input class="form-control" @bind="_password" placeholder="Password" type="password" />
-            </div>
-            <div class="col-md-4">
-                <button class="btn btn-dark" @onclick="Login">Login</button>
-                @if (!string.IsNullOrWhiteSpace(_token))
-                {
-                    <span class="ms-2 text-success">Autenticado</span>
-                }
-            </div>
-        </div>
+@if (!Auth.IsAuthenticated)
+{
+    <div class="alert alert-secondary border-0 shadow-sm mb-4" role="status">
+        <a href="/login">Inicia sesión</a> para guardar la configuración del exchange, consultar balance y operar en Live.
     </div>
-</div>
+}
 
 @if (_form is null)
 {
@@ -178,9 +166,6 @@ else
 @code {
     private UpdateBinanceSettingsRequest? _form;
     private string _secretMasked = string.Empty;
-    private string _username = "admin";
-    private string _password = "admin123";
-    private string _token = string.Empty;
     private string _message = string.Empty;
     private bool _isError;
     private BinanceAccountSummary? _accountSummary;
@@ -189,7 +174,25 @@ else
 
     protected override async Task OnInitializedAsync()
     {
+        Auth.SessionChanged += OnAuthChanged;
         await Reload();
+    }
+
+    private void OnAuthChanged()
+    {
+        _ = InvokeAsync(async () =>
+        {
+            if (Auth.IsAuthenticated)
+            {
+                await CheckHealth();
+            }
+            else
+            {
+                _health = null;
+            }
+
+            StateHasChanged();
+        });
     }
 
     private async Task Reload()
@@ -220,34 +223,9 @@ else
             ApiSecret = string.Empty
         };
         _readiness = await client.GetFromJsonAsync<SystemReadinessView>("/api/system/readiness");
-        if (!string.IsNullOrWhiteSpace(_token))
+        if (Auth.IsAuthenticated)
         {
             await CheckHealth();
-        }
-    }
-
-    private async Task Login()
-    {
-        var client = HttpFactory.CreateClient();
-        client.BaseAddress = new Uri(Nav.BaseUri);
-        var response = await client.PostAsJsonAsync("/api/auth/login", new LoginRequest
-        {
-            Username = _username,
-            Password = _password
-        });
-
-        if (response.IsSuccessStatusCode)
-        {
-            var data = await response.Content.ReadFromJsonAsync<LoginResponse>();
-            _token = data?.Token ?? string.Empty;
-            await CheckHealth();
-            _isError = false;
-            _message = "Login correcto.";
-        }
-        else
-        {
-            _isError = true;
-            _message = "Login fallido.";
         }
     }
 
@@ -258,16 +236,16 @@ else
             return;
         }
 
-        if (string.IsNullOrWhiteSpace(_token))
+        if (!Auth.IsAuthenticated)
         {
             _isError = true;
-            _message = "Debes hacer login para guardar configuracion.";
+            _message = "Debes iniciar sesión para guardar la configuración.";
             return;
         }
 
         var client = HttpFactory.CreateClient();
         client.BaseAddress = new Uri(Nav.BaseUri);
-        client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", _token);
+        Auth.ApplyBearer(client);
 
         var response = await client.PutAsJsonAsync("/api/settings/binance", _form);
         if (response.IsSuccessStatusCode)
@@ -299,16 +277,16 @@ else
 
     private async Task CheckAccountSummary()
     {
-        if (string.IsNullOrWhiteSpace(_token))
+        if (!Auth.IsAuthenticated)
         {
             _isError = true;
-            _message = "Debes hacer login para consultar balance.";
+            _message = "Debes iniciar sesión para consultar el balance.";
             return;
         }
 
         var client = HttpFactory.CreateClient();
         client.BaseAddress = new Uri(Nav.BaseUri);
-        client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", _token);
+        Auth.ApplyBearer(client);
         var response = await client.GetAsync("/api/settings/binance/account-summary");
         if (response.IsSuccessStatusCode)
         {
@@ -327,7 +305,7 @@ else
 
     private async Task CheckHealth()
     {
-        if (string.IsNullOrWhiteSpace(_token))
+        if (!Auth.IsAuthenticated)
         {
             _health = null;
             return;
@@ -335,7 +313,7 @@ else
 
         var client = HttpFactory.CreateClient();
         client.BaseAddress = new Uri(Nav.BaseUri);
-        client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", _token);
+        Auth.ApplyBearer(client);
         var response = await client.GetAsync("/api/settings/binance/health");
         if (response.IsSuccessStatusCode)
         {
@@ -345,16 +323,16 @@ else
 
     private async Task ArmLiveChecklist()
     {
-        if (string.IsNullOrWhiteSpace(_token))
+        if (!Auth.IsAuthenticated)
         {
             _isError = true;
-            _message = "Debes hacer login para armar Live.";
+            _message = "Debes iniciar sesión para armar Live.";
             return;
         }
 
         var client = HttpFactory.CreateClient();
         client.BaseAddress = new Uri(Nav.BaseUri);
-        client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", _token);
+        Auth.ApplyBearer(client);
         var payload = new LiveChecklistRequest
         {
             ConfirmApiTradingPermission = true,
@@ -374,5 +352,10 @@ else
             _isError = true;
             _message = $"No se pudo armar Live (HTTP {(int)response.StatusCode}). {detail}";
         }
+    }
+
+    public void Dispose()
+    {
+        Auth.SessionChanged -= OnAuthChanged;
     }
 }

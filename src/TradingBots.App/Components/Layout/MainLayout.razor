@@ -1,17 +1,56 @@
 @inherits LayoutComponentBase
+@implements IDisposable
 @inject NavigationManager Nav
+@inject ClientAuthSession Auth
 
-<div class="container-fluid p-0">
-    <nav class="navbar navbar-expand-lg navbar-dark bg-dark px-3">
-        <a class="navbar-brand" href="/">Trading Bots</a>
-        <div class="navbar-nav">
-            <a class="nav-link" href="/">Dashboard</a>
-            <a class="nav-link" href="/bots">Bots</a>
-            <a class="nav-link" href="/market">Mercado</a>
-            <a class="nav-link" href="/settings">Exchange</a>
+<AuthLoadTrigger />
+<div class="tb-app d-flex flex-column min-vh-100">
+    <header class="tb-topbar shadow-sm">
+        <div class="container-fluid px-3 px-lg-4 d-flex align-items-center justify-content-between py-2 py-md-3">
+            <a class="tb-brand d-flex align-items-center gap-2 text-decoration-none" href="/">
+                <span class="tb-brand-mark" aria-hidden="true"></span>
+                <span class="tb-brand-text">Trading Bots</span>
+            </a>
+            <nav class="d-flex flex-wrap align-items-center gap-1 gap-md-3">
+                <a class="tb-nav-link" href="/">Dashboard</a>
+                <a class="tb-nav-link" href="/bots">Bots</a>
+                <a class="tb-nav-link" href="/market">Mercado</a>
+                <a class="tb-nav-link" href="/settings">Exchange</a>
+                @if (Auth.IsAuthenticated)
+                {
+                    <span class="tb-session-pill ms-md-2">Sesión activa</span>
+                    <button type="button" class="btn btn-sm btn-outline-light ms-1" @onclick="SignOut">Salir</button>
+                }
+                else
+                {
+                    <a class="btn btn-sm btn-primary ms-md-2" href="/login">Iniciar sesión</a>
+                }
+            </nav>
         </div>
-    </nav>
-    <main class="p-4">
-        @Body
+    </header>
+    <main class="tb-main flex-grow-1">
+        <div class="container-fluid px-3 px-lg-4 py-4">
+            @Body
+        </div>
     </main>
 </div>
+
+@code {
+    protected override void OnInitialized()
+    {
+        Auth.SessionChanged += OnAuthChanged;
+    }
+
+    private void OnAuthChanged() => InvokeAsync(StateHasChanged);
+
+    private async Task SignOut()
+    {
+        await Auth.SignOutAsync();
+        Nav.NavigateTo("/login");
+    }
+
+    public void Dispose()
+    {
+        Auth.SessionChanged -= OnAuthChanged;
+    }
+}

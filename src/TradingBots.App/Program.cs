@@ -43,6 +43,7 @@ builder.Services.AddHttpClient<IBinanceMarketService, BinanceMarketService>();
 builder.Services.AddHttpClient<IBinanceTradeExecutionService, BinanceTradeExecutionService>();
 builder.Services.AddScoped<IBotService, BotService>();
 builder.Services.AddScoped<IAuthService, AuthService>();
+builder.Services.AddScoped<ClientAuthSession>();
 builder.Services.AddScoped<IBinanceSettingsService, BinanceSettingsService>();
 builder.Services.AddScoped<ITradeMlService, TradeMlService>();
 builder.Services.AddScoped<IMarketAdvisorService, MarketAdvisorService>();
