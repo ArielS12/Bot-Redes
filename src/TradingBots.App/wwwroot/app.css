@@ -101,10 +101,60 @@ body {
     --bs-table-bg: transparent;
     --bs-table-color: var(--tb-text);
     --bs-table-border-color: var(--tb-border);
+    --bs-table-striped-bg: rgba(255, 255, 255, 0.04);
+    --bs-table-striped-color: var(--tb-text);
+    --bs-table-active-bg: rgba(255, 255, 255, 0.08);
+    --bs-table-active-color: var(--tb-text);
+    --bs-table-hover-bg: rgba(255, 255, 255, 0.06);
+    --bs-table-hover-color: var(--tb-text);
+}
+
+.tb-main .table th,
+.tb-main .table td {
+    color: var(--tb-text);
+    border-color: var(--tb-border);
 }
 
 .tb-main .table-striped > tbody > tr:nth-of-type(odd) > * {
-    background-color: rgba(255, 255, 255, 0.02);
+    --bs-table-accent-bg: rgba(255, 255, 255, 0.04);
+    color: var(--tb-text);
+}
+
+.tb-main .table-striped > tbody > tr:nth-of-type(even) > * {
+    color: var(--tb-text);
+}
+
+/* Utilidades Bootstrap pensadas para fondo claro: forzar tonos legibles sobre tema oscuro */
+.tb-main .text-success {
+    color: #6ee7b7 !important;
+}
+
+.tb-main .text-danger {
+    color: #fca5a5 !important;
+}
+
+.tb-main .text-warning {
+    color: #fcd34d !important;
+}
+
+.tb-main .text-primary {
+    color: var(--tb-accent-hover) !important;
+}
+
+.tb-main .badge.bg-secondary {
+    background-color: rgba(255, 255, 255, 0.12) !important;
+    color: var(--tb-text) !important;
+    font-weight: 500;
+}
+
+.tb-main .badge.bg-info,
+.tb-main .badge.bg-dark {
+    color: var(--tb-text) !important;
+}
+
+.tb-main .badge.bg-light {
+    background-color: rgba(255, 255, 255, 0.15) !important;
+    color: var(--tb-text) !important;
 }
 
 .tb-main .form-control,
