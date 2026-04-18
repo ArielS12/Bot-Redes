@@ -71,6 +71,11 @@ public sealed class TradingBot
     /// Suma del realized PnL de las ventas del ciclo actual (misma observacion ML hasta cierre total).
     /// </summary>
     public decimal MlRoundTripRealizedUsdt { get; set; }
+
+    /// <summary>
+    /// Ultima vez que el bot paso a Running (manual o AutoPilot). El supervisor usa esto si aun no hay trades.
+    /// </summary>
+    public DateTime? LastRunningStartedAtUtc { get; set; }
 }
 
 public sealed class CreateOrUpdateBotRequest

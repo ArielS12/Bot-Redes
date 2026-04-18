@@ -151,12 +151,14 @@ public sealed class AutoTraderService(
                 recyclable.RollingExpectancyUsdt = 0m;
                 recyclable.NegativeEdgeCycles = 0;
                 recyclable.OutOfTopCycles = 0;
+                recyclable.LastRunningStartedAtUtc = DateTime.UtcNow;
                 recyclable.UpdatedAtUtc = DateTime.UtcNow;
                 capacity--;
                 createdCount++;
                 continue;
             }
 
+            var startUtc = DateTime.UtcNow;
             dbContext.Bots.Add(new TradingBot
             {
                 Name = $"AutoPilot-{candidate.SuggestedStrategy}-{candidate.Symbol}",
@@ -174,7 +176,8 @@ public sealed class AutoTraderService(
                 AutoScaleReferencePnlUsdt = 0m,
                 StrategyType = candidate.SuggestedStrategy,
                 OutOfTopCycles = 0,
-                UpdatedAtUtc = DateTime.UtcNow
+                LastRunningStartedAtUtc = startUtc,
+                UpdatedAtUtc = startUtc
             });
             existingAutoBots.Add(new TradingBot
             {

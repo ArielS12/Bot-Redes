@@ -51,6 +51,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             entity.Property(x => x.NegativeEdgeCycles).HasDefaultValue(0);
             entity.Property(x => x.OutOfTopCycles).HasDefaultValue(0);
             entity.Property(x => x.MlRoundTripRealizedUsdt).HasColumnType("decimal(18,4)");
+            entity.Property(x => x.LastRunningStartedAtUtc);
             entity.Property(x => x.StrategyType).HasConversion<int>();
 
             entity.Property(x => x.Symbols)

@@ -291,6 +291,10 @@ using (var scope = app.Services.CreateScope())
         BEGIN
             ALTER TABLE [Bots] ADD [MlRoundTripRealizedUsdt] decimal(18,4) NOT NULL CONSTRAINT DF_Bots_MlRoundTripRealizedUsdt DEFAULT(0);
         END
+        IF COL_LENGTH('Bots', 'LastRunningStartedAtUtc') IS NULL
+        BEGIN
+            ALTER TABLE [Bots] ADD [LastRunningStartedAtUtc] datetime2 NULL;
+        END
         IF COL_LENGTH('Bots', 'CreatedAtUtc') IS NULL
         BEGIN
             ALTER TABLE [Bots] ADD [CreatedAtUtc] datetime2 NOT NULL CONSTRAINT DF_Bots_CreatedAtUtc DEFAULT(GETUTCDATE());
@@ -393,10 +397,15 @@ using (var scope = app.Services.CreateScope())
             """ALTER TABLE "MlTradeObservations" ALTER COLUMN "IsWin" DROP NOT NULL;""");
         await db.Database.ExecuteSqlRawAsync(
             """UPDATE "MlTradeObservations" SET "IsWin" = NULL WHERE "ClosedAtUtc" IS NULL;""");
+        await db.Database.ExecuteSqlRawAsync(
+            """ALTER TABLE "Bots" ADD COLUMN IF NOT EXISTS "LastRunningStartedAtUtc" timestamp with time zone NULL;""");
+        await db.Database.ExecuteSqlRawAsync(
+            """UPDATE "Bots" SET "LastRunningStartedAtUtc" = "UpdatedAtUtc" WHERE "State" = 1 AND "LastRunningStartedAtUtc" IS NULL;""");
     }
 
     if (!await db.Bots.AnyAsync())
     {
+        var seedStart = DateTime.UtcNow;
         db.Bots.Add(new TradingBot
         {
             Name = "Momentum-BTC",
@@ -406,7 +415,9 @@ using (var scope = app.Services.CreateScope())
             TakeProfitPercent = 3.2m,
             MaxDailyLossUsdt = 60m,
             Symbols = ["BTCUSDT"],
-            State = BotState.Running
+            State = BotState.Running,
+            LastRunningStartedAtUtc = seedStart,
+            UpdatedAtUtc = seedStart
         });
         await db.SaveChangesAsync();
     }

@@ -60,7 +60,7 @@ public sealed class BotSupervisorService(
 
             var referenceUtc = lastTradeByBot.TryGetValue(bot.Id, out var lastTradeAtUtc)
                 ? lastTradeAtUtc
-                : bot.CreatedAtUtc;
+                : bot.LastRunningStartedAtUtc ?? bot.CreatedAtUtc;
 
             if (now - referenceUtc < inactiveWindow)
             {
@@ -87,8 +87,8 @@ public sealed class BotSupervisorService(
     /// </summary>
     private async Task<HashSet<string>> BuildRecentBuySymbolsAsync(DateTime nowUtc)
     {
-        var fresh = await advisorService.GetLatestSuggestionsAsync(24);
-        var cutoff = nowUtc.AddMinutes(-15);
+        var fresh = await advisorService.GetLatestSuggestionsAsync(48);
+        var cutoff = nowUtc.AddMinutes(-30);
         return fresh
             .Where(x => x.Signal.Equals("BUY", StringComparison.OrdinalIgnoreCase) && x.CreatedAtUtc >= cutoff)
             .Select(x => x.Symbol)

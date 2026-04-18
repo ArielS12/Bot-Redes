@@ -73,6 +73,11 @@ public sealed class BotService(
 
         bot.State = state;
         bot.UpdatedAtUtc = DateTime.UtcNow;
+        if (state == BotState.Running)
+        {
+            bot.LastRunningStartedAtUtc = DateTime.UtcNow;
+        }
+
         await dbContext.SaveChangesAsync();
 
         return true;
