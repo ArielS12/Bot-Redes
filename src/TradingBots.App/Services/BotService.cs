@@ -27,6 +27,10 @@ public sealed class BotService(
     private const decimal MinQuoteOrderUsdt = 10m;
     private const decimal MinQuoteVolume24hUsdt = 750_000m;
     private const decimal MinRelativeVolume = 0.7m;
+    /// <summary>Pullback: no entrar si el dia ya se movio demasiado (evita perseguir extremos).</summary>
+    private const decimal PullbackMaxAbsChange24hPercent = 12m;
+    /// <summary>Pullback: separacion EMA como proxy de riesgo en entrada; Momentum la ignora (tendencia fuerte = gap amplio).</summary>
+    private const decimal PullbackMaxEmaSpreadPercentOfPrice = 2.5m;
     private const int MinClosedTradesForAdaptive = 100;
     private static readonly TimeSpan RiskAdjustmentCooldown = TimeSpan.FromHours(6);
     private static readonly TimeSpan AutoScaleCooldown = TimeSpan.FromHours(6);
@@ -178,11 +182,22 @@ public sealed class BotService(
                 : 0m;
             var exposureLimit = bot.BudgetUsdt * (Math.Clamp(bot.MaxExposurePercent, 1m, 100m) / 100m);
             var remainingBudget = Math.Max(0m, exposureLimit - investedCapital);
-            var highVolatility = Math.Abs(activeTicker.PriceChangePercent24h) >= 12m;
-            var spreadRisk = activeTechnical is not null && activeTechnical.LastPrice > 0m &&
-                             (Math.Abs(activeTechnical.EmaFast - activeTechnical.EmaSlow) / activeTechnical.LastPrice) * 100m > 2.5m;
+            var blockPullbackVolatileDay = false;
+            var blockPullbackEmaSpread = false;
+            if (buyCandidate is not null && bot.StrategyType == StrategyType.Pullback)
+            {
+                var buyTicker = marketSnapshot[buyCandidate.Symbol];
+                var abs24 = Math.Abs(buyTicker.PriceChangePercent24h);
+                blockPullbackVolatileDay = abs24 >= PullbackMaxAbsChange24hPercent;
+                var buySnap = buyCandidate.Snapshot;
+                if (buySnap.LastPrice > 0m)
+                {
+                    var emaSpreadPct = Math.Abs(buySnap.EmaFast - buySnap.EmaSlow) / buySnap.LastPrice * 100m;
+                    blockPullbackEmaSpread = emaSpreadPct > PullbackMaxEmaSpreadPercentOfPrice;
+                }
+            }
 
-            if (buySignal && !highVolatility && !spreadRisk)
+            if (buySignal && !blockPullbackVolatileDay && !blockPullbackEmaSpread)
             {
                 var symbol = buyCandidate!.Symbol;
                 var entryPrice = buyCandidate.Snapshot.LastPrice;
@@ -584,8 +599,29 @@ public sealed class BotService(
             {
                 if (buyCandidate is not null)
                 {
+                    var blockPullbackVolatileDay = false;
+                    var blockPullbackEmaSpread = false;
+                    if (bot.StrategyType == StrategyType.Pullback)
+                    {
+                        var abs24 = Math.Abs(marketSnapshot[buyCandidate.Symbol].PriceChangePercent24h);
+                        blockPullbackVolatileDay = abs24 >= PullbackMaxAbsChange24hPercent;
+                        var buySnapDiag = buyCandidate.Snapshot;
+                        if (buySnapDiag.LastPrice > 0m)
+                        {
+                            var emaSpreadPct = Math.Abs(buySnapDiag.EmaFast - buySnapDiag.EmaSlow) / buySnapDiag.LastPrice * 100m;
+                            blockPullbackEmaSpread = emaSpreadPct > PullbackMaxEmaSpreadPercentOfPrice;
+                        }
+                    }
+
                     var quoteCandidate = Math.Min(Math.Max(0m, bot.MaxPositionPerTradeUsdt), remainingBudget);
-                    if (quoteCandidate >= MinQuoteOrderUsdt)
+                    if (blockPullbackVolatileDay || blockPullbackEmaSpread)
+                    {
+                        label = "ESPERANDO";
+                        reason = blockPullbackVolatileDay
+                            ? $"Pullback: |Δ24h| >= {PullbackMaxAbsChange24hPercent}% en {buyCandidate.Symbol} (filtro anti-extremo diario)."
+                            : $"Pullback: separacion EMA 1m demasiado alta en {buyCandidate.Symbol} (proxy spread/tendencia).";
+                    }
+                    else if (quoteCandidate >= MinQuoteOrderUsdt)
                     {
                         label = "BUY_LISTO";
                         reason = $"Entrada valida en {buyCandidate.Symbol} (EMA/MACD/RSI alineados).";
