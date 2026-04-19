@@ -558,7 +558,10 @@ app.MapGet("/api/bots/performance", async (string? botIds, AppDbContext db) =>
         bq = bq.Where(b => filter.Contains(b.Id));
     }
 
-    var bots = await bq.OrderBy(x => x.Name).ToListAsync();
+    var bots = await bq
+        .OrderByDescending(x => x.State)
+        .ThenBy(x => x.Name)
+        .ToListAsync();
     if (bots.Count == 0)
     {
         return Results.Ok(Array.Empty<BotPerformanceItem>());
@@ -598,7 +601,10 @@ app.MapGet("/api/bots/analytics", async (string? botIds, AppDbContext db) =>
         botsQuery = botsQuery.Where(b => filter.Contains(b.Id));
     }
 
-    var bots = await botsQuery.OrderBy(x => x.Name).ToListAsync();
+    var bots = await botsQuery
+        .OrderByDescending(x => x.State)
+        .ThenBy(x => x.Name)
+        .ToListAsync();
     if (bots.Count == 0)
     {
         return Results.Ok(Array.Empty<BotAnalyticsItem>());

@@ -37,13 +37,18 @@ public sealed class BotService(
     private static readonly TimeSpan AutoScaleCooldown = TimeSpan.FromHours(6);
 
     public async Task<IReadOnlyCollection<TradingBot>> GetBotsAsync() =>
-        await dbContext.Bots.OrderBy(x => x.Name).ToListAsync();
+        await dbContext.Bots
+            .OrderByDescending(x => x.State)
+            .ThenBy(x => x.Name)
+            .ToListAsync();
 
     public async Task<PagedBotsResponse> GetBotsPageAsync(int page, int pageSize)
     {
         page = Math.Max(1, page);
         pageSize = Math.Clamp(pageSize, 1, 100);
-        var ordered = dbContext.Bots.OrderBy(x => x.Name);
+        var ordered = dbContext.Bots
+            .OrderByDescending(x => x.State)
+            .ThenBy(x => x.Name);
         var total = await ordered.CountAsync();
         var items = await ordered.Skip((page - 1) * pageSize).Take(pageSize).ToListAsync();
         return new PagedBotsResponse
