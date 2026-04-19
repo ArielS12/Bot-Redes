@@ -299,6 +299,10 @@ using (var scope = app.Services.CreateScope())
         BEGIN
             ALTER TABLE [Bots] ADD [LastRunningStartedAtUtc] datetime2 NULL;
         END
+        IF COL_LENGTH('Bots', 'AutoResumeBlocked') IS NULL
+        BEGIN
+            ALTER TABLE [Bots] ADD [AutoResumeBlocked] bit NOT NULL CONSTRAINT DF_Bots_AutoResumeBlocked DEFAULT(0);
+        END
         IF COL_LENGTH('Bots', 'CreatedAtUtc') IS NULL
         BEGIN
             ALTER TABLE [Bots] ADD [CreatedAtUtc] datetime2 NOT NULL CONSTRAINT DF_Bots_CreatedAtUtc DEFAULT(GETUTCDATE());
@@ -405,6 +409,8 @@ using (var scope = app.Services.CreateScope())
             """ALTER TABLE "Bots" ADD COLUMN IF NOT EXISTS "LastRunningStartedAtUtc" timestamp with time zone NULL;""");
         await db.Database.ExecuteSqlRawAsync(
             """UPDATE "Bots" SET "LastRunningStartedAtUtc" = "UpdatedAtUtc" WHERE "State" = 1 AND "LastRunningStartedAtUtc" IS NULL;""");
+        await db.Database.ExecuteSqlRawAsync(
+            """ALTER TABLE "Bots" ADD COLUMN IF NOT EXISTS "AutoResumeBlocked" boolean NOT NULL DEFAULT FALSE;""");
     }
 
     if (!await db.Bots.AnyAsync())
@@ -492,6 +498,18 @@ app.MapPost("/api/bots/{id:guid}/stop", async (Guid id, IBotService botService) 
 {
     var ok = await botService.SetBotStateAsync(id, BotState.Stopped);
     return ok ? Results.Ok() : Results.NotFound();
+}).RequireAuthorization();
+
+app.MapPost("/api/bots/{id:guid}/auto-block", async (Guid id, IBotService botService) =>
+{
+    var ok = await botService.SetAutoResumeBlockedAsync(id, true);
+    return ok ? Results.NoContent() : Results.NotFound();
+}).RequireAuthorization();
+
+app.MapPost("/api/bots/{id:guid}/auto-unblock", async (Guid id, IBotService botService) =>
+{
+    var ok = await botService.SetAutoResumeBlockedAsync(id, false);
+    return ok ? Results.NoContent() : Results.NotFound();
 }).RequireAuthorization();
 
 app.MapGet("/api/market/overview", async (string? symbols, IBinanceMarketService marketService) =>

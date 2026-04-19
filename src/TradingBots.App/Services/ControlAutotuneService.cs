@@ -33,7 +33,7 @@ public sealed class ControlAutotuneService(
 
         var fromUtc = now.AddDays(-7);
         var autoBotIds = await dbContext.Bots
-            .Where(x => x.IsAutoManaged)
+            .Where(x => x.IsAutoManaged && !x.AutoResumeBlocked)
             .Select(x => x.Id)
             .ToListAsync(ct);
         if (autoBotIds.Count == 0)

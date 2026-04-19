@@ -59,6 +59,12 @@ public sealed class TradingBot
     public int MaxConsecutiveLossTrades { get; set; } = 5;
     public int ConsecutiveLossTrades { get; set; }
     public bool IsAutoManaged { get; set; }
+
+    /// <summary>
+    /// Si es true, AutoPilot no reciclará ni reactivará este bot; rebalanceo y supervisor lo ignoran.
+    /// Se desactiva solo con desbloqueo manual (API/UI).
+    /// </summary>
+    public bool AutoResumeBlocked { get; set; }
     public decimal AutoScaleReferencePnlUsdt { get; set; }
     public StrategyType StrategyType { get; set; } = StrategyType.Momentum;
     public decimal RollingExpectancyUsdt { get; set; }

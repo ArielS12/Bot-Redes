@@ -28,7 +28,7 @@ public sealed class BotSupervisorService(
         var now = DateTime.UtcNow;
         var recentAdvisorBuys = await BuildRecentBuySymbolsAsync(now);
         var candidates = await dbContext.Bots
-            .Where(x => x.IsAutoManaged && x.State == BotState.Running)
+            .Where(x => x.IsAutoManaged && x.State == BotState.Running && !x.AutoResumeBlocked)
             .ToListAsync(ct);
 
         if (candidates.Count == 0)

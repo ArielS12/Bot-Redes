@@ -12,6 +12,7 @@ public interface IBotService
     Task<TradingBot> CreateBotAsync(CreateOrUpdateBotRequest request);
     Task<TradingBot?> UpdateBotAsync(Guid id, CreateOrUpdateBotRequest request);
     Task<bool> SetBotStateAsync(Guid id, BotState state);
+    Task<bool> SetAutoResumeBlockedAsync(Guid id, bool blocked);
     Task TickBotsAsync(IReadOnlyDictionary<string, MarketTicker> marketSnapshot);
     Task<IReadOnlyCollection<BotSignalDiagnosticsItem>> GetSignalDiagnosticsAsync(IEnumerable<Guid>? botIds = null);
 }
@@ -83,6 +84,26 @@ public sealed class BotService(
         ApplyRequest(bot, request);
         await dbContext.SaveChangesAsync();
         return bot;
+    }
+
+    public async Task<bool> SetAutoResumeBlockedAsync(Guid id, bool blocked)
+    {
+        var bot = await dbContext.Bots.FirstOrDefaultAsync(x => x.Id == id);
+        if (bot is null)
+        {
+            return false;
+        }
+
+        bot.AutoResumeBlocked = blocked;
+        if (blocked && bot.State == BotState.Running)
+        {
+            bot.State = BotState.Stopped;
+            bot.LastExecutionError = "Usuario: bloqueo AutoPilot (no reactivar hasta desbloquear).";
+            bot.UpdatedAtUtc = DateTime.UtcNow;
+        }
+
+        await dbContext.SaveChangesAsync();
+        return true;
     }
 
     public async Task<bool> SetBotStateAsync(Guid id, BotState state)

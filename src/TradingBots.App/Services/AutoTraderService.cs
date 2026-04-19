@@ -22,8 +22,8 @@ public sealed class AutoTraderService(
     /// <summary>Ventana alineada con el ciclo (~10s) y batches del analista; antes 5 min dejaba fuera sugerencias validas.</summary>
     private const int SuggestionTtlMinutes = 12;
 
-    /// <summary>Tras parada por inactividad del supervisor, reciclar antes que el cooldown completo (p. ej. 7 min).</summary>
-    private static readonly TimeSpan RecycleCooldownAfterSupervisorInactivity = TimeSpan.FromSeconds(90);
+    /// <summary>Tras paradas operativas (supervisor inactividad o rebalanceo fuera del top), no usar el cooldown largo de settings.</summary>
+    private static readonly TimeSpan RecycleCooldownAfterOperationalStop = TimeSpan.FromSeconds(90);
 
     public async Task<int> CreateBotsFromSuggestionsAsync()
     {
@@ -67,6 +67,11 @@ public sealed class AutoTraderService(
         // Rebalanceo continuo: pausa bots auto sin posicion que ya no esten en el top actual del analista.
         foreach (var running in existingAutoBots.Where(x => x.State == BotState.Running))
         {
+            if (running.AutoResumeBlocked)
+            {
+                continue;
+            }
+
             if (running.PositionQuantity > 0m)
             {
                 continue;
@@ -119,6 +124,7 @@ public sealed class AutoTraderService(
             var recyclable = existingAutoBots
                 .Where(x => x.State == BotState.Stopped &&
                             x.PositionQuantity <= 0m &&
+                            !x.AutoResumeBlocked &&
                             x.Symbols.Contains(candidate.Symbol))
                 .OrderByDescending(x => x.UpdatedAtUtc)
                 .FirstOrDefault();
@@ -246,18 +252,31 @@ public sealed class AutoTraderService(
 
     private static TimeSpan ResolveRecycleCooldown(TradingBot stoppedBot, TimeSpan configuredReactivate)
     {
-        if (IsSupervisorInactivityStop(stoppedBot.LastExecutionError))
+        if (IsOperationalRecycleStop(stoppedBot.LastExecutionError))
         {
             return TimeSpan.FromTicks(Math.Min(
-                RecycleCooldownAfterSupervisorInactivity.Ticks,
+                RecycleCooldownAfterOperationalStop.Ticks,
                 configuredReactivate.Ticks));
         }
 
         return configuredReactivate;
     }
 
-    private static bool IsSupervisorInactivityStop(string? lastError) =>
-        !string.IsNullOrWhiteSpace(lastError) &&
-        lastError.Contains("Supervisor:", StringComparison.OrdinalIgnoreCase) &&
-        lastError.Contains("inactividad", StringComparison.OrdinalIgnoreCase);
+    /// <summary>Paradas por inactividad del supervisor o rebalanceo (no riesgo de trade): reciclar rapido.</summary>
+    private static bool IsOperationalRecycleStop(string? lastError)
+    {
+        if (string.IsNullOrWhiteSpace(lastError))
+        {
+            return false;
+        }
+
+        if (lastError.Contains("Supervisor:", StringComparison.OrdinalIgnoreCase) &&
+            lastError.Contains("inactividad", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        return lastError.Contains("AutoTrader:", StringComparison.OrdinalIgnoreCase) &&
+               lastError.Contains("rebalanceo", StringComparison.OrdinalIgnoreCase);
+    }
 }

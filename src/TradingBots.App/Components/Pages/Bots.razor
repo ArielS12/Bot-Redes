@@ -43,6 +43,7 @@
                     <th>Budget</th>
                     <th>Riesgo</th>
                     <th>Tipo</th>
+                    <th>AutoPilot</th>
                     <th>Acciones</th>
                 </tr>
             </thead>
@@ -94,8 +95,36 @@
                             }
                         </td>
                         <td>
+                            @if (bot.IsAutoManaged)
+                            {
+                                @if (bot.AutoResumeBlocked)
+                                {
+                                    <span class="badge bg-danger" title="AutoPilot no reactivará ni gestionará este bot hasta desbloquear">Bloqueado</span>
+                                }
+                                else
+                                {
+                                    <span class="badge bg-secondary">Normal</span>
+                                }
+                            }
+                            else
+                            {
+                                <span class="text-muted">—</span>
+                            }
+                        </td>
+                        <td>
                             <a class="btn btn-sm btn-outline-dark me-1" href="/bots/@bot.Id">Detalle</a>
                             <button class="btn btn-sm btn-outline-primary me-1" type="button" @onclick="() => Edit(bot)">Editar</button>
+                            @if (bot.IsAutoManaged && Auth.IsAuthenticated)
+                            {
+                                @if (bot.AutoResumeBlocked)
+                                {
+                                    <button class="btn btn-sm btn-outline-success me-1" type="button" title="Permitir de nuevo que AutoPilot recicle o gestione este bot" @onclick="() => SetAutoBlock(bot, false)">Desbloquear</button>
+                                }
+                                else
+                                {
+                                    <button class="btn btn-sm btn-outline-danger me-1" type="button" title="Detiene el bot si corre y evita que AutoPilot lo reactive" @onclick="() => SetAutoBlock(bot, true)">Bloquear</button>
+                                }
+                            }
                             @if (bot.State == BotState.Running)
                             {
                                 <button class="btn btn-sm btn-warning" @onclick="() => Toggle(bot, false)">Detener</button>
@@ -343,6 +372,42 @@
 
         _page++;
         await Reload();
+    }
+
+    private async Task SetAutoBlock(TradingBot bot, bool block)
+    {
+        if (!Auth.IsAuthenticated)
+        {
+            _pageIsError = true;
+            _pageMessage = "Inicia sesión para bloquear o desbloquear AutoPilot.";
+            return;
+        }
+
+        Loading.Begin();
+        try
+        {
+            var client = HttpFactory.CreateClient();
+            client.BaseAddress = new Uri(Nav.BaseUri);
+            Auth.ApplyBearer(client);
+            var path = block ? $"/api/bots/{bot.Id}/auto-block" : $"/api/bots/{bot.Id}/auto-unblock";
+            var response = await client.PostAsync(path, content: null);
+            if (!response.IsSuccessStatusCode)
+            {
+                _pageIsError = true;
+                _pageMessage = $"No se pudo actualizar el bloqueo (HTTP {(int)response.StatusCode}).";
+                return;
+            }
+
+            await LoadDataAsync();
+            _pageIsError = false;
+            _pageMessage = block
+                ? "Bot detenido y bloqueado: AutoPilot no lo reactivará hasta que desbloquees."
+                : "Desbloqueado: AutoPilot puede volver a reciclar o gestionar este bot.";
+        }
+        finally
+        {
+            Loading.End();
+        }
     }
 
     private async Task<T?> SafeGetAsync<T>(HttpClient client, string path)
