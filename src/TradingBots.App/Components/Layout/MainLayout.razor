@@ -2,8 +2,18 @@
 @implements IDisposable
 @inject NavigationManager Nav
 @inject ClientAuthSession Auth
+@inject UiLoadingState Loading
 
 <AuthLoadTrigger />
+@if (Loading.IsBusy)
+{
+    <div class="tb-global-load-overlay" aria-live="polite" aria-busy="true">
+        <div class="tb-global-load-inner">
+            <div class="spinner-border text-primary" role="status"></div>
+            <span class="ms-3">Cargando…</span>
+        </div>
+    </div>
+}
 <div class="tb-app d-flex flex-column min-vh-100">
     <header class="tb-topbar shadow-sm">
         <div class="container-fluid px-3 px-lg-4 d-flex align-items-center justify-content-between py-2 py-md-3">
@@ -39,9 +49,12 @@
     protected override void OnInitialized()
     {
         Auth.SessionChanged += OnAuthChanged;
+        Loading.Changed += OnLoadingChanged;
     }
 
     private void OnAuthChanged() => InvokeAsync(StateHasChanged);
+
+    private void OnLoadingChanged() => InvokeAsync(StateHasChanged);
 
     private async Task SignOut()
     {
@@ -52,5 +65,6 @@
     public void Dispose()
     {
         Auth.SessionChanged -= OnAuthChanged;
+        Loading.Changed -= OnLoadingChanged;
     }
 }

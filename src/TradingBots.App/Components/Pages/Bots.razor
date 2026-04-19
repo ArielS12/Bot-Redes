@@ -2,6 +2,7 @@
 @inject IHttpClientFactory HttpFactory
 @inject NavigationManager Nav
 @inject ClientAuthSession Auth
+@inject UiLoadingState Loading
 @implements IDisposable
 
 <PageTitle>Bots</PageTitle>
@@ -24,7 +25,8 @@
 
 <div class="row">
     <div class="col-12">
-        <table class="table table-striped">
+        <div class="table-responsive tb-bots-table-wrap mb-2">
+        <table class="table table-striped mb-0">
             <thead>
                 <tr>
                     <th>Nombre</th>
@@ -107,17 +109,27 @@
                 }
             </tbody>
         </table>
+        </div>
+        <div class="d-flex flex-wrap align-items-center justify-content-between gap-2 py-2">
+            <span class="text-muted small">
+                @_totalCount bot(es) · página @_page de @TotalPages · @PageSize por página
+            </span>
+            <div class="btn-group btn-group-sm" role="group">
+                <button type="button" class="btn btn-outline-secondary" disabled="@(_page <= 1)" @onclick="GoPrev">Anterior</button>
+                <button type="button" class="btn btn-outline-secondary" disabled="@(_page >= TotalPages)" @onclick="GoNext">Siguiente</button>
+            </div>
+        </div>
 </div>
 </div>
 
 @if (_showEditorModal)
 {
-    <div class="position-fixed top-0 start-0 w-100 h-100 d-flex align-items-center justify-content-center"
-         style="background-color: rgba(0,0,0,0.45); z-index: 1050;">
-        <div class="card shadow" style="width: 100%; max-width: 680px;">
-            <div class="card-header d-flex justify-content-between align-items-center">
-                <span>@(_editingId is null ? "Nuevo bot" : $"Editar bot: {_editingName}")</span>
-                <button type="button" class="btn btn-sm btn-outline-secondary" @onclick="CloseEditor">X</button>
+    <div class="position-fixed top-0 start-0 w-100 h-100 d-flex align-items-center justify-content-center p-2"
+         style="background-color: rgba(0,0,0,0.5); z-index: 1050;">
+        <div class="card shadow tb-bot-editor-modal">
+            <div class="card-header d-flex justify-content-between align-items-center py-2 flex-shrink-0">
+                <span class="text-truncate me-2">@(_editingId is null ? "Nuevo bot" : $"Editar: {_editingName}")</span>
+                <button type="button" class="btn btn-sm btn-outline-secondary flex-shrink-0" @onclick="CloseEditor">Cerrar</button>
             </div>
             <div class="card-body">
                 @if (!string.IsNullOrWhiteSpace(_editorMessage))
@@ -201,6 +213,22 @@
     private bool _pageIsError;
     private string _editorMessage = string.Empty;
     private bool _editorIsError;
+    private int _page = 1;
+    private int _totalCount;
+    private const int PageSize = 15;
+
+    private int TotalPages
+    {
+        get
+        {
+            if (_totalCount <= 0)
+            {
+                return 1;
+            }
+
+            return Math.Max(1, (_totalCount + PageSize - 1) / PageSize);
+        }
+    }
 
     protected override async Task OnInitializedAsync()
     {
@@ -219,18 +247,55 @@
 
     private async Task Reload()
     {
+        Loading.Begin();
+        try
+        {
+            await LoadDataAsync();
+        }
+        finally
+        {
+            Loading.End();
+        }
+    }
+
+    private async Task LoadDataAsync(bool retryEmptyPage = true)
+    {
         var client = HttpFactory.CreateClient();
         client.BaseAddress = new Uri(Nav.BaseUri);
         _pageMessage = string.Empty;
-        var list = await SafeGetAsync<List<TradingBot>>(client, "/api/bots");
+        var paged = await SafeGetAsync<PagedBotsResponse>(client, $"/api/bots/paged?page={_page}&pageSize={PageSize}");
         _bots.Clear();
-        if (list is not null)
+        if (paged is null)
         {
-            _bots.AddRange(list);
+            _totalCount = 0;
+            _perf.Clear();
+            _signals.Clear();
+            _analytics.Clear();
+            return;
         }
 
-        var perfList = await SafeGetAsync<List<BotPerformanceItem>>(client, "/api/bots/performance");
+        _totalCount = paged.TotalCount;
+        _page = paged.Page;
+        _bots.AddRange(paged.Items);
+
+        if (_bots.Count == 0 && _totalCount > 0 && _page > 1 && retryEmptyPage)
+        {
+            _page = 1;
+            await LoadDataAsync(retryEmptyPage: false);
+            return;
+        }
+
         _perf.Clear();
+        _signals.Clear();
+        _analytics.Clear();
+
+        if (_bots.Count == 0)
+        {
+            return;
+        }
+
+        var idQuery = string.Join(",", _bots.Select(b => b.Id));
+        var perfList = await SafeGetAsync<List<BotPerformanceItem>>(client, $"/api/bots/performance?botIds={idQuery}");
         if (perfList is not null)
         {
             foreach (var p in perfList)
@@ -239,8 +304,7 @@
             }
         }
 
-        var signalList = await SafeGetAsync<List<BotSignalDiagnosticsItem>>(client, "/api/bots/signals");
-        _signals.Clear();
+        var signalList = await SafeGetAsync<List<BotSignalDiagnosticsItem>>(client, $"/api/bots/signals?botIds={idQuery}");
         if (signalList is not null)
         {
             foreach (var s in signalList)
@@ -249,8 +313,7 @@
             }
         }
 
-        var analyticsList = await SafeGetAsync<List<BotAnalyticsItem>>(client, "/api/bots/analytics");
-        _analytics.Clear();
+        var analyticsList = await SafeGetAsync<List<BotAnalyticsItem>>(client, $"/api/bots/analytics?botIds={idQuery}");
         if (analyticsList is not null)
         {
             foreach (var a in analyticsList)
@@ -258,6 +321,28 @@
                 _analytics[a.BotId] = a;
             }
         }
+    }
+
+    private async Task GoPrev()
+    {
+        if (_page <= 1)
+        {
+            return;
+        }
+
+        _page--;
+        await Reload();
+    }
+
+    private async Task GoNext()
+    {
+        if (_page >= TotalPages)
+        {
+            return;
+        }
+
+        _page++;
+        await Reload();
     }
 
     private async Task<T?> SafeGetAsync<T>(HttpClient client, string path)
@@ -312,12 +397,20 @@
 
     private async Task Toggle(TradingBot bot, bool start)
     {
-        var client = HttpFactory.CreateClient();
-        client.BaseAddress = new Uri(Nav.BaseUri);
-        Auth.ApplyBearer(client);
-        var path = start ? $"/api/bots/{bot.Id}/start" : $"/api/bots/{bot.Id}/stop";
-        await client.PostAsync(path, content: null);
-        await Reload();
+        Loading.Begin();
+        try
+        {
+            var client = HttpFactory.CreateClient();
+            client.BaseAddress = new Uri(Nav.BaseUri);
+            Auth.ApplyBearer(client);
+            var path = start ? $"/api/bots/{bot.Id}/start" : $"/api/bots/{bot.Id}/stop";
+            await client.PostAsync(path, content: null);
+            await LoadDataAsync();
+        }
+        finally
+        {
+            Loading.End();
+        }
     }
 
     private async Task Save()
@@ -332,33 +425,41 @@
             return;
         }
 
-        Auth.ApplyBearer(client);
-        _form.Symbols = _symbolsText.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList();
-
-        HttpResponseMessage response;
-        if (_editingId is null)
+        Loading.Begin();
+        try
         {
-            response = await client.PostAsJsonAsync("/api/bots", _form);
-        }
-        else
-        {
-            response = await client.PutAsJsonAsync($"/api/bots/{_editingId}", _form);
-        }
+            Auth.ApplyBearer(client);
+            _form.Symbols = _symbolsText.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList();
 
-        if (!response.IsSuccessStatusCode)
-        {
-            _editorIsError = true;
-            var detail = await response.Content.ReadAsStringAsync();
-            _editorMessage = $"No se pudo guardar (HTTP {(int)response.StatusCode}). {detail}";
-            return;
-        }
+            HttpResponseMessage response;
+            if (_editingId is null)
+            {
+                response = await client.PostAsJsonAsync("/api/bots", _form);
+            }
+            else
+            {
+                response = await client.PutAsJsonAsync($"/api/bots/{_editingId}", _form);
+            }
 
-        await Reload();
-        _pageIsError = false;
-        _pageMessage = _editingId is null
-            ? "Bot creado correctamente."
-            : "Bot actualizado correctamente.";
-        ResetForm();
+            if (!response.IsSuccessStatusCode)
+            {
+                _editorIsError = true;
+                var detail = await response.Content.ReadAsStringAsync();
+                _editorMessage = $"No se pudo guardar (HTTP {(int)response.StatusCode}). {detail}";
+                return;
+            }
+
+            await LoadDataAsync();
+            _pageIsError = false;
+            _pageMessage = _editingId is null
+                ? "Bot creado correctamente."
+                : "Bot actualizado correctamente.";
+            ResetForm();
+        }
+        finally
+        {
+            Loading.End();
+        }
     }
 
     private void ResetForm()

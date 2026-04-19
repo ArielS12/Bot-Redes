@@ -175,6 +175,15 @@ public sealed class TradeKpisByBotItem
     public decimal RealizedPnlUsdt { get; set; }
 }
 
+/// <summary>Lista paginada de bots (panel).</summary>
+public sealed class PagedBotsResponse
+{
+    public List<TradingBot> Items { get; set; } = [];
+    public int TotalCount { get; set; }
+    public int Page { get; set; }
+    public int PageSize { get; set; }
+}
+
 public sealed class TradeExecution
 {
     public Guid Id { get; set; } = Guid.NewGuid();

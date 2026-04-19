@@ -1,6 +1,7 @@
 @page "/market"
 @inject IHttpClientFactory HttpFactory
 @inject NavigationManager Nav
+@inject UiLoadingState Loading
 
 <PageTitle>Mercado</PageTitle>
 <h1 class="tb-page-title">Mercado</h1>
@@ -41,13 +42,21 @@
 
     private async Task Load()
     {
-        var client = HttpFactory.CreateClient();
-        client.BaseAddress = new Uri(Nav.BaseUri);
-        var result = await client.GetFromJsonAsync<List<MarketTicker>>($"/api/market/overview?symbols={_symbols}");
-        _data.Clear();
-        if (result is not null)
+        Loading.Begin();
+        try
         {
-            _data.AddRange(result);
+            var client = HttpFactory.CreateClient();
+            client.BaseAddress = new Uri(Nav.BaseUri);
+            var result = await client.GetFromJsonAsync<List<MarketTicker>>($"/api/market/overview?symbols={_symbols}");
+            _data.Clear();
+            if (result is not null)
+            {
+                _data.AddRange(result);
+            }
+        }
+        finally
+        {
+            Loading.End();
         }
     }
 

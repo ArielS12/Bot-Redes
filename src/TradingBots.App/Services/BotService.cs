@@ -7,12 +7,13 @@ namespace TradingBots.App.Services;
 public interface IBotService
 {
     Task<IReadOnlyCollection<TradingBot>> GetBotsAsync();
+    Task<PagedBotsResponse> GetBotsPageAsync(int page, int pageSize);
     Task<TradingBot?> GetBotAsync(Guid id);
     Task<TradingBot> CreateBotAsync(CreateOrUpdateBotRequest request);
     Task<TradingBot?> UpdateBotAsync(Guid id, CreateOrUpdateBotRequest request);
     Task<bool> SetBotStateAsync(Guid id, BotState state);
     Task TickBotsAsync(IReadOnlyDictionary<string, MarketTicker> marketSnapshot);
-    Task<IReadOnlyCollection<BotSignalDiagnosticsItem>> GetSignalDiagnosticsAsync();
+    Task<IReadOnlyCollection<BotSignalDiagnosticsItem>> GetSignalDiagnosticsAsync(IEnumerable<Guid>? botIds = null);
 }
 
 public sealed class BotService(
@@ -37,6 +38,22 @@ public sealed class BotService(
 
     public async Task<IReadOnlyCollection<TradingBot>> GetBotsAsync() =>
         await dbContext.Bots.OrderBy(x => x.Name).ToListAsync();
+
+    public async Task<PagedBotsResponse> GetBotsPageAsync(int page, int pageSize)
+    {
+        page = Math.Max(1, page);
+        pageSize = Math.Clamp(pageSize, 1, 100);
+        var ordered = dbContext.Bots.OrderBy(x => x.Name);
+        var total = await ordered.CountAsync();
+        var items = await ordered.Skip((page - 1) * pageSize).Take(pageSize).ToListAsync();
+        return new PagedBotsResponse
+        {
+            Items = items,
+            TotalCount = total,
+            Page = page,
+            PageSize = pageSize
+        };
+    }
 
     public async Task<TradingBot?> GetBotAsync(Guid id) =>
         await dbContext.Bots.FirstOrDefaultAsync(x => x.Id == id);
@@ -527,9 +544,21 @@ public sealed class BotService(
         }
     }
 
-    public async Task<IReadOnlyCollection<BotSignalDiagnosticsItem>> GetSignalDiagnosticsAsync()
+    public async Task<IReadOnlyCollection<BotSignalDiagnosticsItem>> GetSignalDiagnosticsAsync(IEnumerable<Guid>? botIds = null)
     {
-        var bots = await dbContext.Bots.OrderBy(x => x.Name).ToListAsync();
+        IQueryable<TradingBot> q = dbContext.Bots;
+        if (botIds is not null)
+        {
+            var set = botIds.ToHashSet();
+            if (set.Count == 0)
+            {
+                return Array.Empty<BotSignalDiagnosticsItem>();
+            }
+
+            q = q.Where(b => set.Contains(b.Id));
+        }
+
+        var bots = await q.OrderBy(x => x.Name).ToListAsync();
         var allSymbols = bots.SelectMany(x => x.Symbols).Distinct().ToList();
         var market = await marketService.GetMarketOverviewAsync(allSymbols);
         var marketSnapshot = market.ToDictionary(x => x.Symbol, x => x);

@@ -115,6 +115,50 @@ body {
     margin-top: 0.25rem;
 }
 
+.tb-global-load-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 2000;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(8, 12, 18, 0.45);
+    backdrop-filter: blur(3px);
+    pointer-events: all;
+}
+
+.tb-global-load-inner {
+    display: flex;
+    align-items: center;
+    padding: 1rem 1.5rem;
+    border-radius: 12px;
+    background: rgba(26, 35, 50, 0.95);
+    border: 1px solid var(--tb-border);
+    color: var(--tb-text);
+    font-weight: 500;
+    box-shadow: var(--tb-shadow);
+}
+
+.tb-bots-table-wrap {
+    max-height: min(70vh, 880px);
+    overflow: auto;
+    border-radius: 10px;
+    border: 1px solid var(--tb-border);
+}
+
+.tb-bot-editor-modal {
+    width: 100%;
+    max-width: 480px;
+    max-height: min(88vh, 640px);
+    display: flex;
+    flex-direction: column;
+}
+
+.tb-bot-editor-modal .card-body {
+    overflow-y: auto;
+    max-height: min(72vh, 520px);
+}
+
 .tb-main .card {
     background: var(--tb-bg-elevated);
     border: 1px solid var(--tb-border);

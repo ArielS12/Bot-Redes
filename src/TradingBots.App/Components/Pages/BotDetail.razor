@@ -1,6 +1,7 @@
 @page "/bots/{BotId:guid}"
 @inject IHttpClientFactory HttpFactory
 @inject NavigationManager Nav
+@inject UiLoadingState Loading
 
 <PageTitle>Detalle de bot</PageTitle>
 
@@ -62,14 +63,22 @@ else
 
     protected override async Task OnInitializedAsync()
     {
-        var client = HttpFactory.CreateClient();
-        client.BaseAddress = new Uri(Nav.BaseUri);
-        _bot = await client.GetFromJsonAsync<TradingBot>($"/api/bots/{BotId}");
-        var trades = await client.GetFromJsonAsync<List<TradeExecution>>($"/api/bots/{BotId}/trades");
-        _trades.Clear();
-        if (trades is not null)
+        Loading.Begin();
+        try
         {
-            _trades.AddRange(trades);
+            var client = HttpFactory.CreateClient();
+            client.BaseAddress = new Uri(Nav.BaseUri);
+            _bot = await client.GetFromJsonAsync<TradingBot>($"/api/bots/{BotId}");
+            var trades = await client.GetFromJsonAsync<List<TradeExecution>>($"/api/bots/{BotId}/trades");
+            _trades.Clear();
+            if (trades is not null)
+            {
+                _trades.AddRange(trades);
+            }
+        }
+        finally
+        {
+            Loading.End();
         }
     }
 

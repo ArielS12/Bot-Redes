@@ -2,6 +2,7 @@
 @inject IHttpClientFactory HttpFactory
 @inject NavigationManager Nav
 @inject ClientAuthSession Auth
+@inject UiLoadingState Loading
 @implements IDisposable
 
 <PageTitle>Exchange</PageTitle>
@@ -182,13 +183,21 @@ else
     {
         _ = InvokeAsync(async () =>
         {
-            if (Auth.IsAuthenticated)
+            Loading.Begin();
+            try
             {
-                await CheckHealth();
+                if (Auth.IsAuthenticated)
+                {
+                    await CheckHealthCore();
+                }
+                else
+                {
+                    _health = null;
+                }
             }
-            else
+            finally
             {
-                _health = null;
+                Loading.End();
             }
 
             StateHasChanged();
@@ -196,6 +205,19 @@ else
     }
 
     private async Task Reload()
+    {
+        Loading.Begin();
+        try
+        {
+            await ReloadCore();
+        }
+        finally
+        {
+            Loading.End();
+        }
+    }
+
+    private async Task ReloadCore()
     {
         var client = HttpFactory.CreateClient();
         client.BaseAddress = new Uri(Nav.BaseUri);
@@ -225,7 +247,7 @@ else
         _readiness = await client.GetFromJsonAsync<SystemReadinessView>("/api/system/readiness");
         if (Auth.IsAuthenticated)
         {
-            await CheckHealth();
+            await CheckHealthCore();
         }
     }
 
@@ -243,22 +265,30 @@ else
             return;
         }
 
-        var client = HttpFactory.CreateClient();
-        client.BaseAddress = new Uri(Nav.BaseUri);
-        Auth.ApplyBearer(client);
+        Loading.Begin();
+        try
+        {
+            var client = HttpFactory.CreateClient();
+            client.BaseAddress = new Uri(Nav.BaseUri);
+            Auth.ApplyBearer(client);
 
-        var response = await client.PutAsJsonAsync("/api/settings/binance", _form);
-        if (response.IsSuccessStatusCode)
-        {
-            await Reload();
-            _isError = false;
-            _message = "Configuracion guardada.";
+            var response = await client.PutAsJsonAsync("/api/settings/binance", _form);
+            if (response.IsSuccessStatusCode)
+            {
+                await ReloadCore();
+                _isError = false;
+                _message = "Configuracion guardada.";
+            }
+            else
+            {
+                var detail = await response.Content.ReadAsStringAsync();
+                _isError = true;
+                _message = $"No se pudo guardar (HTTP {(int)response.StatusCode}). {detail}";
+            }
         }
-        else
+        finally
         {
-            var detail = await response.Content.ReadAsStringAsync();
-            _isError = true;
-            _message = $"No se pudo guardar (HTTP {(int)response.StatusCode}). {detail}";
+            Loading.End();
         }
     }
 
@@ -284,26 +314,47 @@ else
             return;
         }
 
-        var client = HttpFactory.CreateClient();
-        client.BaseAddress = new Uri(Nav.BaseUri);
-        Auth.ApplyBearer(client);
-        var response = await client.GetAsync("/api/settings/binance/account-summary");
-        if (response.IsSuccessStatusCode)
+        Loading.Begin();
+        try
         {
-            _accountSummary = await response.Content.ReadFromJsonAsync<BinanceAccountSummary>();
-            _isError = false;
-            _message = "Consulta de cuenta completada.";
+            var client = HttpFactory.CreateClient();
+            client.BaseAddress = new Uri(Nav.BaseUri);
+            Auth.ApplyBearer(client);
+            var response = await client.GetAsync("/api/settings/binance/account-summary");
+            if (response.IsSuccessStatusCode)
+            {
+                _accountSummary = await response.Content.ReadFromJsonAsync<BinanceAccountSummary>();
+                _isError = false;
+                _message = "Consulta de cuenta completada.";
+            }
+            else
+            {
+                _accountSummary = null;
+                var detail = await response.Content.ReadAsStringAsync();
+                _isError = true;
+                _message = $"No se pudo consultar cuenta (HTTP {(int)response.StatusCode}). {detail}";
+            }
         }
-        else
+        finally
         {
-            _accountSummary = null;
-            var detail = await response.Content.ReadAsStringAsync();
-            _isError = true;
-            _message = $"No se pudo consultar cuenta (HTTP {(int)response.StatusCode}). {detail}";
+            Loading.End();
         }
     }
 
     private async Task CheckHealth()
+    {
+        Loading.Begin();
+        try
+        {
+            await CheckHealthCore();
+        }
+        finally
+        {
+            Loading.End();
+        }
+    }
+
+    private async Task CheckHealthCore()
     {
         if (!Auth.IsAuthenticated)
         {
@@ -330,27 +381,35 @@ else
             return;
         }
 
-        var client = HttpFactory.CreateClient();
-        client.BaseAddress = new Uri(Nav.BaseUri);
-        Auth.ApplyBearer(client);
-        var payload = new LiveChecklistRequest
+        Loading.Begin();
+        try
         {
-            ConfirmApiTradingPermission = true,
-            ConfirmIpWhitelist = true,
-            ConfirmSmallSizeFirst = true
-        };
-        var response = await client.PostAsJsonAsync("/api/settings/binance/arm-live", payload);
-        if (response.IsSuccessStatusCode)
-        {
-            await Reload();
-            _isError = false;
-            _message = "Live armado por checklist. Kill switch desactivado.";
+            var client = HttpFactory.CreateClient();
+            client.BaseAddress = new Uri(Nav.BaseUri);
+            Auth.ApplyBearer(client);
+            var payload = new LiveChecklistRequest
+            {
+                ConfirmApiTradingPermission = true,
+                ConfirmIpWhitelist = true,
+                ConfirmSmallSizeFirst = true
+            };
+            var response = await client.PostAsJsonAsync("/api/settings/binance/arm-live", payload);
+            if (response.IsSuccessStatusCode)
+            {
+                await ReloadCore();
+                _isError = false;
+                _message = "Live armado por checklist. Kill switch desactivado.";
+            }
+            else
+            {
+                var detail = await response.Content.ReadAsStringAsync();
+                _isError = true;
+                _message = $"No se pudo armar Live (HTTP {(int)response.StatusCode}). {detail}";
+            }
         }
-        else
+        finally
         {
-            var detail = await response.Content.ReadAsStringAsync();
-            _isError = true;
-            _message = $"No se pudo armar Live (HTTP {(int)response.StatusCode}). {detail}";
+            Loading.End();
         }
     }
 

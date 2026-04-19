@@ -8,6 +8,7 @@ using TradingBots.App.Data;
 using TradingBots.App.Components;
 using TradingBots.App.Models;
 using TradingBots.App.Services;
+using TradingBots.App;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -45,6 +46,7 @@ builder.Services.AddHttpClient<IBinanceTradeExecutionService, BinanceTradeExecut
 builder.Services.AddScoped<IBotService, BotService>();
 builder.Services.AddScoped<IAuthService, AuthService>();
 builder.Services.AddScoped<ClientAuthSession>();
+builder.Services.AddScoped<UiLoadingState>();
 builder.Services.AddScoped<IBinanceSettingsService, BinanceSettingsService>();
 builder.Services.AddScoped<ITradeMlService, TradeMlService>();
 builder.Services.AddScoped<IMarketAdvisorService, MarketAdvisorService>();
@@ -443,6 +445,9 @@ app.MapPost("/api/auth/login", (LoginRequest request, IAuthService authService) 
 
 app.MapGet("/api/bots", async (IBotService botService) => Results.Ok(await botService.GetBotsAsync()));
 
+app.MapGet("/api/bots/paged", async (int page, int pageSize, IBotService botService) =>
+    Results.Ok(await botService.GetBotsPageAsync(page, pageSize)));
+
 app.MapGet("/api/bots/{id:guid}", async (Guid id, IBotService botService) =>
 {
     var bot = await botService.GetBotAsync(id);
@@ -543,12 +548,25 @@ app.MapGet("/api/advisor/suggestions", async (IMarketAdvisorService advisorServi
     return Results.Ok(await advisorService.GetLatestSuggestionsAsync());
 });
 
-app.MapGet("/api/bots/performance", async (AppDbContext db) =>
+app.MapGet("/api/bots/performance", async (string? botIds, AppDbContext db) =>
 {
+    var filter = BotIdsQuery.Parse(botIds);
     var todayStart = DateTime.UtcNow.Date;
-    var bots = await db.Bots.OrderBy(x => x.Name).ToListAsync();
+    IQueryable<TradingBot> bq = db.Bots;
+    if (filter is { Count: > 0 })
+    {
+        bq = bq.Where(b => filter.Contains(b.Id));
+    }
+
+    var bots = await bq.OrderBy(x => x.Name).ToListAsync();
+    if (bots.Count == 0)
+    {
+        return Results.Ok(Array.Empty<BotPerformanceItem>());
+    }
+
+    var idSet = bots.Select(x => x.Id).ToHashSet();
     var tradesToday = await db.Trades
-        .Where(x => x.ExecutedAtUtc >= todayStart)
+        .Where(x => x.ExecutedAtUtc >= todayStart && idSet.Contains(x.BotId))
         .ToListAsync();
 
     var dailyMap = tradesToday
@@ -564,16 +582,31 @@ app.MapGet("/api/bots/performance", async (AppDbContext db) =>
     return Results.Ok(data);
 });
 
-app.MapGet("/api/bots/signals", async (IBotService botService) =>
+app.MapGet("/api/bots/signals", async (string? botIds, IBotService botService) =>
 {
-    return Results.Ok(await botService.GetSignalDiagnosticsAsync());
+    var filter = BotIdsQuery.Parse(botIds);
+    IEnumerable<Guid>? ids = filter is { Count: > 0 } ? filter : null;
+    return Results.Ok(await botService.GetSignalDiagnosticsAsync(ids));
 });
 
-app.MapGet("/api/bots/analytics", async (AppDbContext db) =>
+app.MapGet("/api/bots/analytics", async (string? botIds, AppDbContext db) =>
 {
-    var bots = await db.Bots.OrderBy(x => x.Name).ToListAsync();
+    var filter = BotIdsQuery.Parse(botIds);
+    IQueryable<TradingBot> botsQuery = db.Bots;
+    if (filter is { Count: > 0 })
+    {
+        botsQuery = botsQuery.Where(b => filter.Contains(b.Id));
+    }
+
+    var bots = await botsQuery.OrderBy(x => x.Name).ToListAsync();
+    if (bots.Count == 0)
+    {
+        return Results.Ok(Array.Empty<BotAnalyticsItem>());
+    }
+
+    var idSet = bots.Select(x => x.Id).ToHashSet();
     var sellTrades = await db.Trades
-        .Where(x => x.Side == "SELL")
+        .Where(x => x.Side == "SELL" && idSet.Contains(x.BotId))
         .OrderBy(x => x.ExecutedAtUtc)
         .ToListAsync();
     var grouped = sellTrades.GroupBy(x => x.BotId).ToDictionary(x => x.Key, x => x.ToList());
