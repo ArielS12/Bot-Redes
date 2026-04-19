@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Text;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Infrastructure;
@@ -404,6 +405,8 @@ using (var scope = app.Services.CreateScope())
     if (db.Database.IsNpgsql())
     {
         await db.Database.ExecuteSqlRawAsync(
+            """ALTER TABLE "BinanceSettings" ADD COLUMN IF NOT EXISTS "MinStoppedAfterRiskStopMinutes" integer NOT NULL DEFAULT 45;""");
+        await db.Database.ExecuteSqlRawAsync(
             """ALTER TABLE "Bots" ADD COLUMN IF NOT EXISTS "MlRoundTripRealizedUsdt" numeric(18,4) NOT NULL DEFAULT 0;""");
         await db.Database.ExecuteSqlRawAsync(
             """ALTER TABLE "MlTradeObservations" ALTER COLUMN "IsWin" DROP NOT NULL;""");
@@ -415,6 +418,18 @@ using (var scope = app.Services.CreateScope())
             """UPDATE "Bots" SET "LastRunningStartedAtUtc" = "UpdatedAtUtc" WHERE "State" = 1 AND "LastRunningStartedAtUtc" IS NULL;""");
         await db.Database.ExecuteSqlRawAsync(
             """ALTER TABLE "Bots" ADD COLUMN IF NOT EXISTS "AutoResumeBlocked" boolean NOT NULL DEFAULT FALSE;""");
+    }
+
+    if (db.Database.IsSqlite())
+    {
+        try
+        {
+            await db.Database.ExecuteSqlRawAsync(
+                """ALTER TABLE BinanceSettings ADD COLUMN MinStoppedAfterRiskStopMinutes INTEGER NOT NULL DEFAULT 45;""");
+        }
+        catch (SqliteException ex) when (ex.Message.Contains("duplicate column", StringComparison.OrdinalIgnoreCase))
+        {
+        }
     }
 
     if (!await db.Bots.AnyAsync())
