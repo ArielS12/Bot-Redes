@@ -480,6 +480,7 @@ public sealed class BotService(
             if (bot.ConsecutiveLossTrades >= Math.Max(1, bot.MaxConsecutiveLossTrades))
             {
                 bot.State = BotState.Stopped;
+                bot.LastExecutionError = "Bot pausado por racha de perdidas consecutivas (AutoPilot).";
                 logger.LogWarning("Bot {BotName} detenido por racha de perdidas consecutivas ({LossCount}).", bot.Name, bot.ConsecutiveLossTrades);
             }
 
@@ -501,6 +502,7 @@ public sealed class BotService(
             if (bot.RealizedPnlUsdt <= -Math.Abs(bot.MaxDailyLossUsdt))
             {
                 bot.State = BotState.Stopped;
+                bot.LastExecutionError = "Bot pausado por perdida diaria maxima (AutoPilot).";
                 logger.LogWarning("Bot {BotName} detenido por max daily loss.", bot.Name);
             }
 

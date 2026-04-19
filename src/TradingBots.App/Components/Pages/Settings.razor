@@ -90,7 +90,10 @@ else
                     <label class="form-check-label ms-2">Monitoreo automatico de bots (auto-creador/supervisor)</label>
                 </div>
                 <label class="form-label">Capacidad maxima de AutoBots</label>
-                <InputNumber class="form-control mb-3" @bind-Value="_form.MaxAutoBots" disabled="@(!AutoMonitoringEnabled)" />
+                <InputNumber class="form-control mb-2" @bind-Value="_form.MaxAutoBots" disabled="@(!AutoMonitoringEnabled)" />
+                <label class="form-label">Min. minutos detenido tras parada por riesgo (antes de reciclar bot)</label>
+                <InputNumber class="form-control mb-3" @bind-Value="_form.MinStoppedAfterRiskStopMinutes" disabled="@(!AutoMonitoringEnabled)" />
+                <div class="text-muted small mb-2">Paradas operativas (rebalanceo/supervisor) siguen usando la espera corta configurada en el servidor.</div>
 
                 <hr />
                 <h6>ML Fase 1</h6>
@@ -237,6 +240,7 @@ else
             LiveEnabledByChecklist = current.LiveEnabledByChecklist,
             GlobalKillSwitch = current.GlobalKillSwitch,
             MaxAutoBots = current.MaxAutoBots,
+            MinStoppedAfterRiskStopMinutes = current.MinStoppedAfterRiskStopMinutes <= 0 ? 45 : current.MinStoppedAfterRiskStopMinutes,
             MlEnabled = current.MlEnabled,
             MlShadowMode = current.MlShadowMode,
             MlMinWinProbability = current.MlMinWinProbability <= 0m ? 0.55m : current.MlMinWinProbability,

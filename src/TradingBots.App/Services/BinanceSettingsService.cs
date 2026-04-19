@@ -60,6 +60,7 @@ public sealed class BinanceSettingsService(AppDbContext dbContext) : IBinanceSet
         settings.RebalanceOutOfTopCycles = Math.Clamp(request.RebalanceOutOfTopCycles, 2, 6);
         settings.MinActiveBeforePauseMinutes = Math.Clamp(request.MinActiveBeforePauseMinutes, 10, 90);
         settings.MinStoppedBeforeReactivateMinutes = Math.Clamp(request.MinStoppedBeforeReactivateMinutes, 2, 30);
+        settings.MinStoppedAfterRiskStopMinutes = Math.Clamp(request.MinStoppedAfterRiskStopMinutes, 15, 240);
         settings.MlEnabled = request.MlEnabled;
         settings.MlShadowMode = request.MlShadowMode;
         settings.MlMinWinProbability = decimal.Clamp(request.MlMinWinProbability, 0.50m, 0.90m);
@@ -110,6 +111,7 @@ public sealed class BinanceSettingsService(AppDbContext dbContext) : IBinanceSet
         RebalanceOutOfTopCycles = Math.Clamp(settings.RebalanceOutOfTopCycles <= 0 ? 3 : settings.RebalanceOutOfTopCycles, 2, 6),
         MinActiveBeforePauseMinutes = Math.Clamp(settings.MinActiveBeforePauseMinutes <= 0 ? 20 : settings.MinActiveBeforePauseMinutes, 10, 90),
         MinStoppedBeforeReactivateMinutes = Math.Clamp(settings.MinStoppedBeforeReactivateMinutes <= 0 ? 5 : settings.MinStoppedBeforeReactivateMinutes, 2, 30),
+        MinStoppedAfterRiskStopMinutes = Math.Clamp(settings.MinStoppedAfterRiskStopMinutes <= 0 ? 45 : settings.MinStoppedAfterRiskStopMinutes, 15, 240),
         MlEnabled = settings.MlEnabled,
         MlShadowMode = settings.MlShadowMode,
         MlMinWinProbability = settings.MlMinWinProbability <= 0m ? 0.55m : decimal.Clamp(settings.MlMinWinProbability, 0.50m, 0.90m),

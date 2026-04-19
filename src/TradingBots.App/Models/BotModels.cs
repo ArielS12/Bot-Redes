@@ -230,6 +230,10 @@ public sealed class BinanceConnectionSettings
     public int RebalanceOutOfTopCycles { get; set; } = 3;
     public int MinActiveBeforePauseMinutes { get; set; } = 20;
     public int MinStoppedBeforeReactivateMinutes { get; set; } = 5;
+    /// <summary>
+    /// Minutos minimos detenido tras parada por riesgo antes de reciclaje AutoPilot.
+    /// </summary>
+    public int MinStoppedAfterRiskStopMinutes { get; set; } = 45;
     public bool MlEnabled { get; set; }
     public bool MlShadowMode { get; set; } = true;
     public decimal MlMinWinProbability { get; set; } = 0.55m;
@@ -254,6 +258,7 @@ public sealed class UpdateBinanceSettingsRequest
     public int RebalanceOutOfTopCycles { get; set; } = 3;
     public int MinActiveBeforePauseMinutes { get; set; } = 20;
     public int MinStoppedBeforeReactivateMinutes { get; set; } = 5;
+    public int MinStoppedAfterRiskStopMinutes { get; set; } = 45;
     public bool MlEnabled { get; set; }
     public bool MlShadowMode { get; set; } = true;
     public decimal MlMinWinProbability { get; set; } = 0.55m;
@@ -276,6 +281,7 @@ public sealed class BinanceSettingsView
     public int RebalanceOutOfTopCycles { get; set; }
     public int MinActiveBeforePauseMinutes { get; set; }
     public int MinStoppedBeforeReactivateMinutes { get; set; }
+    public int MinStoppedAfterRiskStopMinutes { get; set; }
     public bool MlEnabled { get; set; }
     public bool MlShadowMode { get; set; }
     public decimal MlMinWinProbability { get; set; }

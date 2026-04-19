@@ -55,6 +55,7 @@ public sealed class AutoTraderService(
         }
         var minActiveBeforePause = TimeSpan.FromMinutes(Math.Clamp(settings.MinActiveBeforePauseMinutes <= 0 ? 20 : settings.MinActiveBeforePauseMinutes, 10, 90));
         var minStoppedBeforeReactivate = TimeSpan.FromMinutes(Math.Clamp(settings.MinStoppedBeforeReactivateMinutes <= 0 ? 5 : settings.MinStoppedBeforeReactivateMinutes, 2, 30));
+        var minStoppedAfterRiskMinutes = Math.Clamp(settings.MinStoppedAfterRiskStopMinutes <= 0 ? 45 : settings.MinStoppedAfterRiskStopMinutes, 15, 240);
         var outOfTopCyclesToPause = Math.Clamp(settings.RebalanceOutOfTopCycles <= 0 ? 3 : settings.RebalanceOutOfTopCycles, 2, 6);
         var existingAutoBots = await dbContext.Bots
             .Where(x => x.IsAutoManaged)
@@ -132,7 +133,7 @@ public sealed class AutoTraderService(
             if (recyclable is not null)
             {
                 var stoppedAge = now - recyclable.UpdatedAtUtc;
-                var requiredCooldown = ResolveRecycleCooldown(recyclable, minStoppedBeforeReactivate);
+                var requiredCooldown = ResolveRecycleCooldown(recyclable, minStoppedBeforeReactivate, minStoppedAfterRiskMinutes);
                 if (stoppedAge < requiredCooldown)
                 {
                     continue;
@@ -250,7 +251,7 @@ public sealed class AutoTraderService(
         return map;
     }
 
-    private static TimeSpan ResolveRecycleCooldown(TradingBot stoppedBot, TimeSpan configuredReactivate)
+    private static TimeSpan ResolveRecycleCooldown(TradingBot stoppedBot, TimeSpan configuredReactivate, int minMinutesAfterRiskStop)
     {
         if (IsOperationalRecycleStop(stoppedBot.LastExecutionError))
         {
@@ -259,7 +260,42 @@ public sealed class AutoTraderService(
                 configuredReactivate.Ticks));
         }
 
+        if (IsRiskDrivenRecycleStop(stoppedBot))
+        {
+            var riskFloor = TimeSpan.FromMinutes(minMinutesAfterRiskStop);
+            return configuredReactivate >= riskFloor ? configuredReactivate : riskFloor;
+        }
+
         return configuredReactivate;
+    }
+
+    /// <summary>Parada por perdidas, limite diario o edge negativo: esperar mas antes de reutilizar el slot AutoPilot.</summary>
+    private static bool IsRiskDrivenRecycleStop(TradingBot bot)
+    {
+        if (IsOperationalRecycleStop(bot.LastExecutionError))
+        {
+            return false;
+        }
+
+        var err = bot.LastExecutionError ?? string.Empty;
+        if (err.Contains("edge negativo", StringComparison.OrdinalIgnoreCase) ||
+            err.Contains("racha de perdidas", StringComparison.OrdinalIgnoreCase) ||
+            err.Contains("perdida diaria maxima", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        if (bot.ConsecutiveLossTrades >= Math.Max(1, bot.MaxConsecutiveLossTrades))
+        {
+            return true;
+        }
+
+        if (bot.MaxDailyLossUsdt > 0m && bot.RealizedPnlUsdt <= -Math.Abs(bot.MaxDailyLossUsdt))
+        {
+            return true;
+        }
+
+        return false;
     }
 
     /// <summary>Paradas por inactividad del supervisor o rebalanceo (no riesgo de trade): reciclar rapido.</summary>

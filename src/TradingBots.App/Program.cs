@@ -371,6 +371,10 @@ using (var scope = app.Services.CreateScope())
         BEGIN
             ALTER TABLE [BinanceSettings] ADD [MlMinSamples] int NOT NULL CONSTRAINT DF_BinanceSettings_MlMinSamples DEFAULT(80);
         END
+        IF COL_LENGTH('BinanceSettings', 'MinStoppedAfterRiskStopMinutes') IS NULL
+        BEGIN
+            ALTER TABLE [BinanceSettings] ADD [MinStoppedAfterRiskStopMinutes] int NOT NULL CONSTRAINT DF_BinanceSettings_MinStoppedAfterRiskStopMinutes DEFAULT(45);
+        END
         IF OBJECT_ID(N'[MlTradeObservations]', N'U') IS NULL
         BEGIN
             CREATE TABLE [MlTradeObservations](

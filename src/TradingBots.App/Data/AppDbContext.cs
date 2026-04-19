@@ -82,6 +82,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             entity.Property(x => x.RebalanceOutOfTopCycles).HasDefaultValue(3);
             entity.Property(x => x.MinActiveBeforePauseMinutes).HasDefaultValue(20);
             entity.Property(x => x.MinStoppedBeforeReactivateMinutes).HasDefaultValue(5);
+            entity.Property(x => x.MinStoppedAfterRiskStopMinutes).HasDefaultValue(45);
             entity.Property(x => x.MlEnabled).HasDefaultValue(false);
             entity.Property(x => x.MlShadowMode).HasDefaultValue(true);
             entity.Property(x => x.MlMinWinProbability).HasColumnType("decimal(10,4)").HasDefaultValue(0.55m);
