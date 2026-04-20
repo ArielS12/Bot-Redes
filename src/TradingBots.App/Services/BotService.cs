@@ -373,24 +373,15 @@ public sealed class BotService(
                                        profitableNow &&
                                        pnlPct >= bot.TakeProfit1Percent &&
                                        bot.TakeProfit1SellPercent > 0m;
-                var qtyToSell = 0m;
-                if (requestPartialTp)
-                {
-                    qtyToSell = decimal.Round(bot.PositionQuantity * (Math.Clamp(bot.TakeProfit1SellPercent, 1m, 100m) / 100m), 8, MidpointRounding.ToZero);
-                    if (qtyToSell <= 0m || qtyToSell >= bot.PositionQuantity)
-                    {
-                        qtyToSell = bot.PositionQuantity;
-                    }
-                }
-                else if (requestFullExit)
-                {
-                    qtyToSell = bot.PositionQuantity;
-                }
-
-                if (qtyToSell <= 0m)
+                // Siempre un unico SELL con toda la posicion: el TP1 parcial (p.ej. 50%) + cierre del resto
+                // duplicaba filas en Trades con cantidades ~mitad cada una.
+                var shouldExit = requestFullExit || requestPartialTp;
+                if (!shouldExit)
                 {
                     goto skipSell;
                 }
+
+                var qtyToSell = bot.PositionQuantity;
 
                 var fill = realTradingEnabled
                     ? await tradeExecutionService.MarketSellAsync(activeSymbol, qtyToSell, bot.Id)
@@ -443,10 +434,6 @@ public sealed class BotService(
                         bot.PositionOpenedAtUtc = null;
                         bot.PeakPriceSinceEntry = 0m;
                         bot.TakeProfit1Taken = false;
-                    }
-                    else if (requestPartialTp)
-                    {
-                        bot.TakeProfit1Taken = true;
                     }
                     bot.LastExecutionError = string.Empty;
                     dbContext.Trades.Add(new TradeExecution

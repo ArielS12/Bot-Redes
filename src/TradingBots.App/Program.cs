@@ -432,14 +432,23 @@ using (var scope = app.Services.CreateScope())
         }
     }
 
+    // Bots sin posicion abierta (no hay activo a la espera de venta): budget y tope por trade 20/20.
+    var nowBudgetAlign = DateTime.UtcNow;
+    await db.Bots
+        .Where(b => b.PositionQuantity <= 0m && (b.BudgetUsdt != 20m || b.MaxPositionPerTradeUsdt != 20m))
+        .ExecuteUpdateAsync(s => s
+            .SetProperty(b => b.BudgetUsdt, 20m)
+            .SetProperty(b => b.MaxPositionPerTradeUsdt, 20m)
+            .SetProperty(b => b.UpdatedAtUtc, nowBudgetAlign));
+
     if (!await db.Bots.AnyAsync())
     {
         var seedStart = DateTime.UtcNow;
         db.Bots.Add(new TradingBot
         {
             Name = "Momentum-BTC",
-            BudgetUsdt = 1000m,
-            MaxPositionPerTradeUsdt = 100m,
+            BudgetUsdt = 20m,
+            MaxPositionPerTradeUsdt = 20m,
             StopLossPercent = 1.8m,
             TakeProfitPercent = 3.2m,
             MaxDailyLossUsdt = 60m,

@@ -140,8 +140,8 @@ public sealed class AutoTraderService(
                 }
 
                 recyclable.Name = $"AutoPilot-{candidate.SuggestedStrategy}-{candidate.Symbol}";
-                recyclable.BudgetUsdt = 50m;
-                recyclable.MaxPositionPerTradeUsdt = 10m;
+                recyclable.BudgetUsdt = 20m;
+                recyclable.MaxPositionPerTradeUsdt = 20m;
                 recyclable.StopLossPercent = sl;
                 recyclable.TakeProfitPercent = tp;
                 recyclable.MaxDailyLossUsdt = 4m;
@@ -169,8 +169,8 @@ public sealed class AutoTraderService(
             dbContext.Bots.Add(new TradingBot
             {
                 Name = $"AutoPilot-{candidate.SuggestedStrategy}-{candidate.Symbol}",
-                BudgetUsdt = 50m,
-                MaxPositionPerTradeUsdt = 10m,
+                BudgetUsdt = 20m,
+                MaxPositionPerTradeUsdt = 20m,
                 StopLossPercent = sl,
                 TakeProfitPercent = tp,
                 MaxDailyLossUsdt = 4m,
