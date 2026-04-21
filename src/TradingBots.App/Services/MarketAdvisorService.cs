@@ -14,6 +14,11 @@ public sealed class MarketAdvisorService(
     AppDbContext dbContext,
     IBinanceMarketService marketService) : IMarketAdvisorService
 {
+    private static readonly HashSet<string> AdvisorSymbolExclusions = new(StringComparer.Ordinal)
+    {
+        "UUSDT", "UUSDC"
+    };
+
     public async Task AnalyzeMarketAsync(IReadOnlyCollection<MarketTicker> marketSnapshot)
     {
         if (marketSnapshot.Count == 0)
@@ -24,7 +29,8 @@ public sealed class MarketAdvisorService(
         var now = DateTime.UtcNow;
         var candidates = marketSnapshot
             .Where(IsTradableQuoteAsset)
-            .Where(x => x.QuoteVolume24h >= 1_000_000m)
+            .Where(x => !AdvisorSymbolExclusions.Contains(x.Symbol))
+            .Where(x => x.QuoteVolume24h >= 2_500_000m)
             .OrderByDescending(x => x.QuoteVolume24h)
             .Take(30)
             .ToList();
@@ -77,6 +83,9 @@ public sealed class MarketAdvisorService(
     private static bool IsTradableQuoteAsset(MarketTicker x) =>
         x.Symbol.EndsWith("USDT", StringComparison.Ordinal) || x.Symbol.EndsWith("USDC", StringComparison.Ordinal);
 
+    private static decimal ScoreFlatMarketPenalty(decimal change24h) =>
+        Math.Abs(change24h) < 0.18m ? 0.28m : 0m;
+
     private static InvestmentSuggestion? BuildSuggestion(
         MarketTicker ticker,
         IReadOnlyDictionary<string, TechnicalMarketSnapshot> tf1,
@@ -91,16 +100,22 @@ public sealed class MarketAdvisorService(
             return null;
         }
 
+        if (AdvisorSymbolExclusions.Contains(ticker.Symbol))
+        {
+            return null;
+        }
+
         var strategy = DetectStrategy(ticker.PriceChangePercent24h);
         var trendStrength = ScoreTrend(t1, t5, t15);
         var momentumStrength = ScoreMomentum(t1, ticker.PriceChangePercent24h);
         var liquidityStrength = ScoreLiquidity(ticker.QuoteVolume24h, t1.RelativeVolume);
         var volatilityPenalty = ScoreVolatilityPenalty(ticker.PriceChangePercent24h, t1);
         var costPenalty = ScoreExecutionCostPenalty(ticker, t1);
-        var totalScore = Math.Max(0m, trendStrength + momentumStrength + liquidityStrength - volatilityPenalty - costPenalty);
+        var flatPenalty = ScoreFlatMarketPenalty(ticker.PriceChangePercent24h);
+        var totalScore = Math.Max(0m, trendStrength + momentumStrength + liquidityStrength - volatilityPenalty - costPenalty - flatPenalty);
 
         var confidence = totalScore >= 6.5m ? "ALTA" : totalScore >= 4.5m ? "MEDIA" : "BAJA";
-        var signal = totalScore >= 4.8m ? "BUY" : totalScore >= 3.2m ? "WATCH" : "HOLD";
+        var signal = totalScore >= 5.05m ? "BUY" : totalScore >= 3.35m ? "WATCH" : "HOLD";
         var rationale = $"Confianza {confidence}. Trend={trendStrength:0.00}, Momentum={momentumStrength:0.00}, Liquidez={liquidityStrength:0.00}, Riesgo={volatilityPenalty:0.00}, Coste={costPenalty:0.00}.";
 
         return new InvestmentSuggestion
@@ -165,7 +180,7 @@ public sealed class MarketAdvisorService(
             spreadProxyBps = Math.Min(40m, spreadProxyPct * 20m);
         }
 
-        var liquidityPenaltyBps = ticker.QuoteVolume24h < 3_000_000m ? 14m : 4m;
+        var liquidityPenaltyBps = ticker.QuoteVolume24h < 5_000_000m ? 14m : 4m;
         var totalBps = feeAndSlipBps + spreadProxyBps + liquidityPenaltyBps;
         return Math.Min(1.3m, totalBps / 50m);
     }

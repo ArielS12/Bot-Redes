@@ -13,6 +13,7 @@ public interface IBotService
     Task<TradingBot?> UpdateBotAsync(Guid id, CreateOrUpdateBotRequest request);
     Task<bool> SetBotStateAsync(Guid id, BotState state);
     Task<bool> SetAutoResumeBlockedAsync(Guid id, bool blocked);
+    Task<ForceSellResponse> ForceSellAsync(Guid id);
     Task TickBotsAsync(IReadOnlyDictionary<string, MarketTicker> marketSnapshot);
     Task<IReadOnlyCollection<BotSignalDiagnosticsItem>> GetSignalDiagnosticsAsync(IEnumerable<Guid>? botIds = null);
 }
@@ -124,6 +125,156 @@ public sealed class BotService(
         await dbContext.SaveChangesAsync();
 
         return true;
+    }
+
+    public async Task<ForceSellResponse> ForceSellAsync(Guid id)
+    {
+        var bot = await dbContext.Bots.FirstOrDefaultAsync(x => x.Id == id);
+        if (bot is null)
+        {
+            return new ForceSellResponse { Outcome = "not_found", Message = "Bot no encontrado." };
+        }
+
+        if (bot.PositionQuantity <= 0m)
+        {
+            return new ForceSellResponse { Outcome = "invalid", Message = "El bot no tiene posicion abierta." };
+        }
+
+        var symbol = !string.IsNullOrWhiteSpace(bot.PositionSymbol)
+            ? bot.PositionSymbol
+            : bot.Symbols.FirstOrDefault() ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(symbol))
+        {
+            return new ForceSellResponse { Outcome = "invalid", Message = "No hay simbolo asociado a la posicion." };
+        }
+
+        var qtyToSell = bot.PositionQuantity;
+        var settings = await settingsService.GetActiveSettingsAsync();
+        var mlEnabled = settings.MlEnabled;
+        var realTradingEnabled = await tradeExecutionService.IsRealTradingEnabledAsync();
+
+        TradeFillResult? fill;
+        if (realTradingEnabled)
+        {
+            fill = await tradeExecutionService.MarketSellAsync(symbol, qtyToSell, bot.Id);
+        }
+        else
+        {
+            var market = await marketService.GetMarketOverviewAsync(new[] { symbol });
+            var ticker = market.FirstOrDefault(x => x.Symbol.Equals(symbol, StringComparison.OrdinalIgnoreCase));
+            if (ticker is null || ticker.LastPrice <= 0m)
+            {
+                return new ForceSellResponse
+                {
+                    Outcome = "invalid",
+                    Message = "No hay precio de mercado para simular la venta (paper)."
+                };
+            }
+
+            fill = new TradeFillResult
+            {
+                ExecutedQuantity = qtyToSell,
+                AveragePrice = ticker.LastPrice
+            };
+            dbContext.OrderAuditEvents.Add(new OrderAuditEvent
+            {
+                BotId = bot.Id,
+                Symbol = symbol,
+                Side = "SELL",
+                Stage = "execution",
+                Status = "simulated",
+                Message = "Paper: forzar venta manual (cierre total).",
+                RequestedQuoteQty = 0m,
+                RequestedBaseQty = qtyToSell,
+                ExecutedQty = fill.ExecutedQuantity,
+                ExecutedPrice = fill.AveragePrice,
+                LatencyMs = 0,
+                IsLive = false,
+                CreatedAtUtc = DateTime.UtcNow
+            });
+        }
+
+        if (fill is null || fill.ExecutedQuantity <= 0m || fill.AveragePrice <= 0m)
+        {
+            var err = realTradingEnabled ? tradeExecutionService.GetLastExecutionError() : string.Empty;
+            return new ForceSellResponse
+            {
+                Outcome = "invalid",
+                Message = string.IsNullOrWhiteSpace(err) ? "No se pudo ejecutar la venta." : err
+            };
+        }
+
+        var entryPx = bot.AverageEntryPrice > 0m ? bot.AverageEntryPrice : fill.AveragePrice;
+        var realized = decimal.Round((fill.AveragePrice - entryPx) * fill.ExecutedQuantity, 2);
+        bot.RealizedPnlUsdt += realized;
+        bot.ConsecutiveLossTrades = realized < 0m ? bot.ConsecutiveLossTrades + 1 : 0;
+        if (realized < 0m && bot.CooldownMinutesAfterLoss > 0)
+        {
+            bot.CooldownSymbol = symbol;
+            bot.CooldownUntilUtc = DateTime.UtcNow.AddMinutes(bot.CooldownMinutesAfterLoss);
+        }
+        else if (realized >= 0m)
+        {
+            bot.CooldownSymbol = string.Empty;
+            bot.CooldownUntilUtc = null;
+        }
+
+        bot.PositionQuantity = 0m;
+        bot.UnrealizedPnlUsdt = 0m;
+        bot.AverageEntryPrice = 0m;
+        bot.PositionSymbol = string.Empty;
+        bot.PositionOpenedAtUtc = null;
+        bot.PeakPriceSinceEntry = 0m;
+        bot.TakeProfit1Taken = false;
+        bot.LastExecutionError = string.Empty;
+        bot.UpdatedAtUtc = DateTime.UtcNow;
+
+        dbContext.Trades.Add(new TradeExecution
+        {
+            BotId = bot.Id,
+            Symbol = symbol,
+            Side = "SELL",
+            Price = fill.AveragePrice,
+            Quantity = fill.ExecutedQuantity,
+            RealizedPnlUsdt = realized,
+            ExecutedAtUtc = DateTime.UtcNow
+        });
+
+        if (mlEnabled)
+        {
+            bot.MlRoundTripRealizedUsdt += realized;
+            await tradeMlService.RecordExitAsync(bot.Id, symbol, bot.MlRoundTripRealizedUsdt);
+            bot.MlRoundTripRealizedUsdt = 0m;
+        }
+
+        if (bot.ConsecutiveLossTrades >= Math.Max(1, bot.MaxConsecutiveLossTrades))
+        {
+            bot.State = BotState.Stopped;
+            bot.LastExecutionError = "Bot pausado por racha de perdidas consecutivas (AutoPilot).";
+        }
+
+        if (bot.RealizedPnlUsdt <= -Math.Abs(bot.MaxDailyLossUsdt))
+        {
+            bot.State = BotState.Stopped;
+            bot.LastExecutionError = "Bot pausado por perdida diaria maxima (AutoPilot).";
+        }
+
+        await dbContext.SaveChangesAsync();
+        logger.LogInformation(
+            "Forzar venta ejecutada: bot {BotId} {BotName} {Symbol} qty {Qty} @ {Price}",
+            bot.Id,
+            bot.Name,
+            symbol,
+            fill.ExecutedQuantity,
+            fill.AveragePrice);
+
+        return new ForceSellResponse
+        {
+            Outcome = "ok",
+            Message = "Venta forzada ejecutada (cierre total a mercado).",
+            QuantitySold = fill.ExecutedQuantity,
+            AveragePrice = fill.AveragePrice
+        };
     }
 
     public async Task TickBotsAsync(IReadOnlyDictionary<string, MarketTicker> marketSnapshot)

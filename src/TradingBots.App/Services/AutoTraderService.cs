@@ -19,6 +19,15 @@ public sealed class AutoTraderService(
         "USDT", "USDC", "FDUSD", "USD1", "BUSD", "TUSD", "USDP", "DAI"
     };
 
+    /// <summary>Pares con historial de churn / micro-edge que no aportan a AutoPilot.</summary>
+    private static readonly HashSet<string> AutopilotSymbolBlocklist = new(StringComparer.Ordinal)
+    {
+        "UUSDT", "UUSDC"
+    };
+
+    /// <summary>Umbral alineado con el analista (BUY mas estricto) mas sesgo por simbolo.</summary>
+    private const decimal MinAdjustedBuyScore = 5.05m;
+
     /// <summary>Ventana alineada con el ciclo (~10s) y batches del analista; antes 5 min dejaba fuera sugerencias validas.</summary>
     private const int SuggestionTtlMinutes = 12;
 
@@ -36,7 +45,8 @@ public sealed class AutoTraderService(
             .GroupBy(x => x.Symbol)
             .Select(g => g.OrderByDescending(x => x.CreatedAtUtc).First())
             .Where(x => x.Signal == "BUY" &&
-                        GetAdjustedScore(x, symbolBias) >= 4.8m &&
+                        GetAdjustedScore(x, symbolBias) >= MinAdjustedBuyScore &&
+                        !AutopilotSymbolBlocklist.Contains(x.Symbol) &&
                         !IsStableStablePair(x.Symbol) &&
                         (x.Symbol.EndsWith("USDT", StringComparison.Ordinal) || x.Symbol.EndsWith("USDC", StringComparison.Ordinal)))
             .OrderByDescending(x => GetAdjustedScore(x, symbolBias))
@@ -118,9 +128,10 @@ public sealed class AutoTraderService(
                 break;
             }
 
+            // SL algo mas ajustado y TP mayor (mejor R:R frente a perdidas medias grandes).
             var (sl, tp) = candidate.SuggestedStrategy == StrategyType.Momentum
-                ? (2.0m, 4.5m)
-                : (1.8m, 3.2m);
+                ? (1.85m, 5.2m)
+                : (1.55m, 4.0m);
 
             var recyclable = existingAutoBots
                 .Where(x => x.State == BotState.Stopped &&
@@ -242,10 +253,15 @@ public sealed class AutoTraderService(
             var wins = group.Count(x => x.RealizedPnlUsdt > 0m);
             var winRate = wins * 1m / count; // 0..1
             var net = group.Sum(x => x.RealizedPnlUsdt);
-            var bias = (winRate - 0.5m) * 1.2m; // -0.6..+0.6 aprox
-            if (net > 0m) bias += 0.2m;
-            if (net < 0m) bias -= 0.2m;
-            map[group.Key] = Math.Clamp(decimal.Round(bias, 4), -1.0m, 1.0m);
+            var bias = (winRate - 0.5m) * 1.4m;
+            if (winRate < 0.45m)
+            {
+                bias -= 0.22m;
+            }
+
+            if (net > 0m) bias += 0.15m;
+            if (net < 0m) bias -= 0.45m;
+            map[group.Key] = Math.Clamp(decimal.Round(bias, 4), -1.2m, 1.2m);
         }
 
         return map;

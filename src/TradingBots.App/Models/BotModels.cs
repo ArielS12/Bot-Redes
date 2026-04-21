@@ -1,3 +1,5 @@
+using System.Text.Json.Serialization;
+
 namespace TradingBots.App.Models;
 
 public enum BinanceEnvironment
@@ -340,6 +342,22 @@ public sealed class BotSignalDiagnosticsItem
     public string Reason { get; set; } = string.Empty;
     public string ActiveSymbol { get; set; } = string.Empty;
     public string ExitState { get; set; } = string.Empty;
+}
+
+public sealed class ForceSellResponse
+{
+    /// <summary>ok | not_found | invalid</summary>
+    [JsonPropertyName("outcome")]
+    public string Outcome { get; init; } = string.Empty;
+
+    [JsonPropertyName("message")]
+    public string Message { get; init; } = string.Empty;
+
+    [JsonPropertyName("quantitySold")]
+    public decimal? QuantitySold { get; init; }
+
+    [JsonPropertyName("averagePrice")]
+    public decimal? AveragePrice { get; init; }
 }
 
 public sealed class OrderAuditEvent

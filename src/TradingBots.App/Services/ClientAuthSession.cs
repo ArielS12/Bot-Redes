@@ -12,6 +12,9 @@ public sealed class ClientAuthSession(IJSRuntime js)
 
     public event Action? SessionChanged;
 
+    /// <summary>True tras el primer intento de leer el token desde el navegador (evita falsos "no autenticado" antes del primer render interactivo).</summary>
+    public bool SessionHydrated { get; private set; }
+
     public bool IsAuthenticated =>
         !string.IsNullOrEmpty(Token) &&
         ExpiresAtUtc is { } exp &&
@@ -19,30 +22,29 @@ public sealed class ClientAuthSession(IJSRuntime js)
 
     public async Task InitializeFromBrowserAsync()
     {
+        if (SessionHydrated)
+        {
+            return;
+        }
+
         try
         {
             var json = await js.InvokeAsync<string?>("tradingBotsAuth.get");
-            if (string.IsNullOrWhiteSpace(json))
+            if (!string.IsNullOrWhiteSpace(json))
             {
-                return;
+                var dto = JsonSerializer.Deserialize<StoredAuthDto>(json);
+                if (dto is not null && !string.IsNullOrEmpty(dto.T))
+                {
+                    Token = dto.T;
+                    ExpiresAtUtc = dto.E;
+                    if (!IsAuthenticated)
+                    {
+                        await ClearStorageAsync();
+                        Token = null;
+                        ExpiresAtUtc = null;
+                    }
+                }
             }
-
-            var dto = JsonSerializer.Deserialize<StoredAuthDto>(json);
-            if (dto is null || string.IsNullOrEmpty(dto.T))
-            {
-                return;
-            }
-
-            Token = dto.T;
-            ExpiresAtUtc = dto.E;
-            if (!IsAuthenticated)
-            {
-                await ClearStorageAsync();
-                Token = null;
-                ExpiresAtUtc = null;
-            }
-
-            SessionChanged?.Invoke();
         }
         catch (JSException)
         {
@@ -51,6 +53,11 @@ public sealed class ClientAuthSession(IJSRuntime js)
         catch (InvalidOperationException)
         {
             // Prerender
+        }
+        finally
+        {
+            SessionHydrated = true;
+            SessionChanged?.Invoke();
         }
     }
 

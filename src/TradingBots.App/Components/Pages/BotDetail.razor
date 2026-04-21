@@ -2,15 +2,35 @@
 @inject IHttpClientFactory HttpFactory
 @inject NavigationManager Nav
 @inject UiLoadingState Loading
+@inject ClientAuthSession Auth
+@inject IJSRuntime JSRuntime
+@implements IDisposable
 
 <PageTitle>Detalle de bot</PageTitle>
 
-@if (_bot is null)
+@if (_loadingDetail)
 {
     <p>Cargando detalle...</p>
 }
+else if (_bot is null)
+{
+    <div class="alert @(_detailIsError ? "alert-danger" : "alert-secondary")" role="alert">
+        @if (string.IsNullOrWhiteSpace(_detailMessage))
+        {
+            <span>No se pudo cargar el bot.</span>
+        }
+        else
+        {
+            @_detailMessage
+        }
+    </div>
+}
 else
 {
+    @if (!string.IsNullOrWhiteSpace(_detailMessage))
+    {
+        <div class="alert @(_detailIsError ? "alert-danger" : "alert-success")" role="alert">@_detailMessage</div>
+    }
     <h1 class="tb-page-title">@_bot.Name</h1>
     <div class="row g-3 mb-3">
         <div class="col-md-3">
@@ -26,6 +46,21 @@ else
             <div class="card"><div class="card-body"><h6>PnL total</h6><h5 class="@PnlClass(_bot.RealizedPnlUsdt + _bot.UnrealizedPnlUsdt)">@(_bot.RealizedPnlUsdt + _bot.UnrealizedPnlUsdt).ToString("0.00") USDT</h5></div></div>
         </div>
     </div>
+    @if (_bot.PositionQuantity > 0m)
+    {
+        <div class="mb-3 d-flex flex-wrap align-items-center gap-2">
+            <span class="text-muted">Posición abierta:</span>
+            <span class="badge bg-secondary">@_bot.PositionQuantity.ToString("0.########") @(_bot.PositionSymbol)</span>
+            @if (Auth.IsAuthenticated)
+            {
+                <button type="button" class="btn btn-sm btn-warning" @onclick="ForceSellAsync">Forzar venta (mercado)</button>
+            }
+            else
+            {
+                <span class="text-muted small"><a href="/login">Inicia sesión</a> para forzar venta.</span>
+            }
+        </div>
+    }
 
     <h4>Compras / Ventas</h4>
     <table class="table table-striped table-sm">
@@ -60,14 +95,54 @@ else
 
     private TradingBot? _bot;
     private readonly List<TradeExecution> _trades = [];
+    private string _detailMessage = string.Empty;
+    private bool _detailIsError;
+    private bool _loadingDetail = true;
 
     protected override async Task OnInitializedAsync()
     {
+        Auth.SessionChanged += OnAuthChanged;
+        await ReloadAsync();
+    }
+
+    private void OnAuthChanged()
+    {
+        _ = InvokeAsync(async () =>
+        {
+            await ReloadAsync();
+            StateHasChanged();
+        });
+    }
+
+    public void Dispose() => Auth.SessionChanged -= OnAuthChanged;
+
+    private async Task ReloadAsync()
+    {
+        _loadingDetail = true;
+        _detailMessage = string.Empty;
+        _detailIsError = false;
         Loading.Begin();
         try
         {
+            if (!Auth.SessionHydrated)
+            {
+                _bot = null;
+                _trades.Clear();
+                _detailMessage = "Comprobando sesión…";
+                return;
+            }
+
+            if (!Auth.IsAuthenticated)
+            {
+                _bot = null;
+                _trades.Clear();
+                _detailMessage = "Inicia sesión para ver el detalle y el historial de trades.";
+                return;
+            }
+
             var client = HttpFactory.CreateClient();
             client.BaseAddress = new Uri(Nav.BaseUri);
+            Auth.ApplyBearer(client);
             _bot = await client.GetFromJsonAsync<TradingBot>($"/api/bots/{BotId}");
             var trades = await client.GetFromJsonAsync<List<TradeExecution>>($"/api/bots/{BotId}/trades");
             _trades.Clear();
@@ -75,6 +150,55 @@ else
             {
                 _trades.AddRange(trades);
             }
+
+            if (_bot is null)
+            {
+                _detailMessage = "No se encontró el bot.";
+                _detailIsError = true;
+            }
+        }
+        finally
+        {
+            _loadingDetail = false;
+            Loading.End();
+        }
+    }
+
+    private async Task ForceSellAsync()
+    {
+        if (_bot is null || !Auth.IsAuthenticated)
+        {
+            return;
+        }
+
+        var sym = !string.IsNullOrWhiteSpace(_bot.PositionSymbol)
+            ? _bot.PositionSymbol
+            : (_bot.Symbols.FirstOrDefault() ?? "?");
+        var confirmText =
+            $"¿Vender toda la posición a mercado?\nBot: {_bot.Name}\nCantidad: {_bot.PositionQuantity:0.########} {sym}.";
+        if (!await JSRuntime.InvokeAsync<bool>("tbConfirm", confirmText))
+        {
+            return;
+        }
+
+        Loading.Begin();
+        try
+        {
+            var client = HttpFactory.CreateClient();
+            client.BaseAddress = new Uri(Nav.BaseUri);
+            Auth.ApplyBearer(client);
+            var response = await client.PostAsync($"/api/bots/{BotId}/force-sell", content: null);
+            var result = await response.Content.ReadFromJsonAsync<ForceSellResponse>();
+            if (result is null || result.Outcome != "ok")
+            {
+                _detailIsError = true;
+                _detailMessage = result?.Message ?? $"Error (HTTP {(int)response.StatusCode}).";
+                return;
+            }
+
+            _detailIsError = false;
+            _detailMessage = result.Message;
+            await ReloadAsync();
         }
         finally
         {

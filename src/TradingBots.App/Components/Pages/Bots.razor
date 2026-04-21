@@ -3,6 +3,7 @@
 @inject NavigationManager Nav
 @inject ClientAuthSession Auth
 @inject UiLoadingState Loading
+@inject IJSRuntime JSRuntime
 @implements IDisposable
 
 <PageTitle>Bots</PageTitle>
@@ -10,10 +11,10 @@
     <h1 class="tb-page-title mb-0">Bots</h1>
     <button class="btn btn-primary" type="button" @onclick="NewBot">Nuevo bot</button>
 </div>
-@if (!Auth.IsAuthenticated)
+@if (Auth.SessionHydrated && !Auth.IsAuthenticated)
 {
     <div class="alert alert-secondary border-0 shadow-sm mb-4" role="status">
-        <a href="/login">Inicia sesión</a> para crear o editar bots y para iniciar o detener operaciones.
+        <a href="/login">Inicia sesión</a> para ver la lista de bots, métricas y trades, y para crear, editar o controlar operaciones.
     </div>
 }
 @if (!string.IsNullOrWhiteSpace(_pageMessage))
@@ -124,6 +125,10 @@
                                 {
                                     <button class="btn btn-sm btn-outline-danger me-1" type="button" title="Detiene el bot si corre y evita que AutoPilot lo reactive" @onclick="() => SetAutoBlock(bot, true)">Bloquear</button>
                                 }
+                            }
+                            @if (Auth.IsAuthenticated && bot.PositionQuantity > 0m)
+                            {
+                                <button class="btn btn-sm btn-outline-warning me-1" type="button" title="Cierra toda la posición con una orden a mercado" @onclick="() => ForceSell(bot)">Forzar venta</button>
                             }
                             @if (bot.State == BotState.Running)
                             {
@@ -289,8 +294,26 @@
 
     private async Task LoadDataAsync(bool retryEmptyPage = true)
     {
+        if (!Auth.SessionHydrated)
+        {
+            return;
+        }
+
+        if (!Auth.IsAuthenticated)
+        {
+            _bots.Clear();
+            _totalCount = 0;
+            _perf.Clear();
+            _signals.Clear();
+            _analytics.Clear();
+            _pageMessage = string.Empty;
+            _pageIsError = false;
+            return;
+        }
+
         var client = HttpFactory.CreateClient();
         client.BaseAddress = new Uri(Nav.BaseUri);
+        Auth.ApplyBearer(client);
         _pageMessage = string.Empty;
         var paged = await SafeGetAsync<PagedBotsResponse>(client, $"/api/bots/paged?page={_page}&pageSize={PageSize}");
         _bots.Clear();
@@ -471,6 +494,50 @@
             var path = start ? $"/api/bots/{bot.Id}/start" : $"/api/bots/{bot.Id}/stop";
             await client.PostAsync(path, content: null);
             await LoadDataAsync();
+        }
+        finally
+        {
+            Loading.End();
+        }
+    }
+
+    private async Task ForceSell(TradingBot bot)
+    {
+        if (!Auth.IsAuthenticated)
+        {
+            _pageIsError = true;
+            _pageMessage = "Inicia sesión para forzar venta.";
+            return;
+        }
+
+        var sym = !string.IsNullOrWhiteSpace(bot.PositionSymbol)
+            ? bot.PositionSymbol
+            : (bot.Symbols.FirstOrDefault() ?? "?");
+        var confirmText =
+            $"¿Vender toda la posición a mercado?\nBot: {bot.Name}\nCantidad: {bot.PositionQuantity:0.########} {sym}.";
+        if (!await JSRuntime.InvokeAsync<bool>("tbConfirm", confirmText))
+        {
+            return;
+        }
+
+        Loading.Begin();
+        try
+        {
+            var client = HttpFactory.CreateClient();
+            client.BaseAddress = new Uri(Nav.BaseUri);
+            Auth.ApplyBearer(client);
+            var response = await client.PostAsync($"/api/bots/{bot.Id}/force-sell", content: null);
+            var result = await response.Content.ReadFromJsonAsync<ForceSellResponse>();
+            if (result is null || result.Outcome != "ok")
+            {
+                _pageIsError = true;
+                _pageMessage = result?.Message ?? $"Forzar venta falló (HTTP {(int)response.StatusCode}).";
+                return;
+            }
+
+            await LoadDataAsync();
+            _pageIsError = false;
+            _pageMessage = result.Message;
         }
         finally
         {
