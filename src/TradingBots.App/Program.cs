@@ -477,18 +477,16 @@ app.MapPost("/api/auth/login", (LoginRequest request, IAuthService authService) 
     return result is null ? Results.Unauthorized() : Results.Ok(result);
 });
 
-app.MapGet("/api/bots", async (IBotService botService) => Results.Ok(await botService.GetBotsAsync()))
-    .RequireAuthorization();
+app.MapGet("/api/bots", async (IBotService botService) => Results.Ok(await botService.GetBotsAsync()));
 
 app.MapGet("/api/bots/paged", async (int page, int pageSize, IBotService botService) =>
-    Results.Ok(await botService.GetBotsPageAsync(page, pageSize)))
-    .RequireAuthorization();
+    Results.Ok(await botService.GetBotsPageAsync(page, pageSize)));
 
 app.MapGet("/api/bots/{id:guid}", async (Guid id, IBotService botService) =>
 {
     var bot = await botService.GetBotAsync(id);
     return bot is null ? Results.NotFound() : Results.Ok(bot);
-}).RequireAuthorization();
+});
 
 app.MapGet("/api/bots/{id:guid}/trades", async (Guid id, AppDbContext db) =>
 {
@@ -504,43 +502,43 @@ app.MapGet("/api/bots/{id:guid}/trades", async (Guid id, AppDbContext db) =>
         .ToListAsync();
 
     return Results.Ok(trades);
-}).RequireAuthorization();
+});
 
 app.MapPost("/api/bots", async (CreateOrUpdateBotRequest request, IBotService botService) =>
 {
     var bot = await botService.CreateBotAsync(request);
     return Results.Created($"/api/bots/{bot.Id}", bot);
-}).RequireAuthorization();
+});
 
 app.MapPut("/api/bots/{id:guid}", async (Guid id, CreateOrUpdateBotRequest request, IBotService botService) =>
 {
     var bot = await botService.UpdateBotAsync(id, request);
     return bot is null ? Results.NotFound() : Results.Ok(bot);
-}).RequireAuthorization();
+});
 
 app.MapPost("/api/bots/{id:guid}/start", async (Guid id, IBotService botService) =>
 {
     var ok = await botService.SetBotStateAsync(id, BotState.Running);
     return ok ? Results.Ok() : Results.NotFound();
-}).RequireAuthorization();
+});
 
 app.MapPost("/api/bots/{id:guid}/stop", async (Guid id, IBotService botService) =>
 {
     var ok = await botService.SetBotStateAsync(id, BotState.Stopped);
     return ok ? Results.Ok() : Results.NotFound();
-}).RequireAuthorization();
+});
 
 app.MapPost("/api/bots/{id:guid}/auto-block", async (Guid id, IBotService botService) =>
 {
     var ok = await botService.SetAutoResumeBlockedAsync(id, true);
     return ok ? Results.NoContent() : Results.NotFound();
-}).RequireAuthorization();
+});
 
 app.MapPost("/api/bots/{id:guid}/auto-unblock", async (Guid id, IBotService botService) =>
 {
     var ok = await botService.SetAutoResumeBlockedAsync(id, false);
     return ok ? Results.NoContent() : Results.NotFound();
-}).RequireAuthorization();
+});
 
 app.MapPost("/api/bots/{id:guid}/force-sell", async (Guid id, IBotService botService) =>
 {
@@ -551,7 +549,7 @@ app.MapPost("/api/bots/{id:guid}/force-sell", async (Guid id, IBotService botSer
         "ok" => Results.Ok(r),
         _ => Results.BadRequest(r)
     };
-}).RequireAuthorization();
+});
 
 app.MapGet("/api/market/overview", async (string? symbols, IBinanceMarketService marketService) =>
 {
@@ -578,17 +576,17 @@ app.MapPut("/api/settings/binance", async (UpdateBinanceSettingsRequest request,
     {
         return Results.BadRequest(new { error = ex.Message });
     }
-}).RequireAuthorization();
+});
 
 app.MapGet("/api/settings/binance/account-summary", async (IBinanceTradeExecutionService executionService) =>
 {
     return Results.Ok(await executionService.GetAccountSummaryAsync());
-}).RequireAuthorization();
+});
 
 app.MapGet("/api/settings/binance/health", async (IBinanceTradeExecutionService executionService) =>
 {
     return Results.Ok(await executionService.GetHealthAsync());
-}).RequireAuthorization();
+});
 
 app.MapPost("/api/settings/binance/arm-live", async (LiveChecklistRequest request, IBinanceSettingsService settingsService) =>
 {
@@ -600,12 +598,12 @@ app.MapPost("/api/settings/binance/arm-live", async (LiveChecklistRequest reques
     {
         return Results.BadRequest(new { error = ex.Message });
     }
-}).RequireAuthorization();
+});
 
 app.MapGet("/api/advisor/suggestions", async (IMarketAdvisorService advisorService) =>
 {
     return Results.Ok(await advisorService.GetLatestSuggestionsAsync());
-}).RequireAuthorization();
+});
 
 app.MapGet("/api/bots/performance", async (string? botIds, AppDbContext db) =>
 {
@@ -642,14 +640,14 @@ app.MapGet("/api/bots/performance", async (string? botIds, AppDbContext db) =>
         TotalPnlUsdt = b.RealizedPnlUsdt + b.UnrealizedPnlUsdt
     });
     return Results.Ok(data);
-}).RequireAuthorization();
+});
 
 app.MapGet("/api/bots/signals", async (string? botIds, IBotService botService) =>
 {
     var filter = BotIdsQuery.Parse(botIds);
     IEnumerable<Guid>? ids = filter is { Count: > 0 } ? filter : null;
     return Results.Ok(await botService.GetSignalDiagnosticsAsync(ids));
-}).RequireAuthorization();
+});
 
 app.MapGet("/api/bots/analytics", async (string? botIds, AppDbContext db) =>
 {
@@ -736,19 +734,20 @@ app.MapGet("/api/bots/analytics", async (string? botIds, AppDbContext db) =>
     }
 
     return Results.Ok(result.OrderByDescending(x => x.NetRealizedUsdt));
-}).RequireAuthorization();
+});
 
+// Lectura de diagnostico ML; sin JWT para poder comprobar en navegador / monitor basico.
 app.MapGet("/api/ml/summary", async (IBinanceSettingsService settingsService, ITradeMlService mlService, CancellationToken ct) =>
 {
     var settings = await settingsService.GetActiveSettingsAsync();
     return Results.Ok(await mlService.GetSummaryAsync(settings, ct));
-}).RequireAuthorization();
+});
 
 app.MapGet("/api/ml/diagnostics", async (IBinanceSettingsService settingsService, ITradeMlService mlService, CancellationToken ct) =>
 {
     var settings = await settingsService.GetActiveSettingsAsync();
     return Results.Ok(await mlService.GetDiagnosticsAsync(settings, ct));
-}).RequireAuthorization();
+});
 
 app.MapGet("/api/audit/orders", async (int take, AppDbContext db) =>
 {
@@ -758,7 +757,7 @@ app.MapGet("/api/audit/orders", async (int take, AppDbContext db) =>
         .Take(safeTake)
         .ToListAsync();
     return Results.Ok(data);
-}).RequireAuthorization();
+});
 
 app.MapGet("/api/system/readiness", async (AppDbContext db) =>
 {
@@ -889,7 +888,7 @@ app.MapGet("/api/dashboard/trade-kpis", async (string? dateFrom, string? dateTo,
     };
 
     return Results.Ok(summary);
-}).RequireAuthorization();
+});
 
 app.MapRazorComponents<App>()
     .AddInteractiveServerRenderMode();
