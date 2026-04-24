@@ -9,6 +9,7 @@ public sealed class BotExecutionBackgroundService(
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         using var timer = new PeriodicTimer(TimeSpan.FromSeconds(10));
+        var nextReconcileUtc = DateTime.UtcNow;
 
         while (!stoppingToken.IsCancellationRequested && await timer.WaitForNextTickAsync(stoppingToken))
         {
@@ -22,6 +23,7 @@ public sealed class BotExecutionBackgroundService(
                 var supervisorService = scope.ServiceProvider.GetRequiredService<IBotSupervisorService>();
                 var controlAutotuneService = scope.ServiceProvider.GetRequiredService<IControlAutotuneService>();
                 var runtimeStatus = scope.ServiceProvider.GetRequiredService<IRuntimeStatusService>();
+                var tradeExecutionService = scope.ServiceProvider.GetRequiredService<IBinanceTradeExecutionService>();
                 var symbols = (await botService.GetBotsAsync()).SelectMany(x => x.Symbols).Distinct().ToList();
                 if (symbols.Count == 0)
                 {
@@ -32,6 +34,11 @@ public sealed class BotExecutionBackgroundService(
                 var fullMarketData = await marketService.GetMarketOverviewAsync(["*"]);
                 await advisorService.AnalyzeMarketAsync(fullMarketData);
                 var tuneStatus = await controlAutotuneService.TuneAsync(stoppingToken);
+                if (DateTime.UtcNow >= nextReconcileUtc)
+                {
+                    await tradeExecutionService.ReconcileOpenPositionsAsync(stoppingToken);
+                    nextReconcileUtc = DateTime.UtcNow.AddMinutes(1);
+                }
                 var stoppedBySupervisor = await supervisorService.StopInactiveAutoBotsAsync(stoppingToken);
                 var created = await autoTraderService.CreateBotsFromSuggestionsAsync();
                 runtimeStatus.MarkAutoTraderRun($"Auto-creator OK. Bots creados: {created}. Supervisor inactivos: {stoppedBySupervisor}. AutoTune: {tuneStatus}");

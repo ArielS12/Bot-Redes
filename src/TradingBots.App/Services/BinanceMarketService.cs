@@ -93,6 +93,14 @@ public sealed class BinanceMarketService(
                     .Select(x => decimal.TryParse(x[4].GetString(), NumberStyles.Any, CultureInfo.InvariantCulture, out var c) ? c : 0m)
                     .Where(x => x > 0m)
                     .ToList() ?? [];
+                var highs = raw?
+                    .Where(x => x.Count > 2)
+                    .Select(x => decimal.TryParse(x[2].GetString(), NumberStyles.Any, CultureInfo.InvariantCulture, out var h) ? h : 0m)
+                    .ToList() ?? [];
+                var lows = raw?
+                    .Where(x => x.Count > 3)
+                    .Select(x => decimal.TryParse(x[3].GetString(), NumberStyles.Any, CultureInfo.InvariantCulture, out var l) ? l : 0m)
+                    .ToList() ?? [];
                 var quoteVolumes = raw?
                     .Where(x => x.Count > 7)
                     .Select(x => decimal.TryParse(x[7].GetString(), NumberStyles.Any, CultureInfo.InvariantCulture, out var v) ? v : 0m)
@@ -107,6 +115,8 @@ public sealed class BinanceMarketService(
                 var rsi14 = CalculateRsi(closes, 14);
                 var (macdLine, signalLine, histogram, previousHistogram) = CalculateMacd(closes);
                 var relativeVolume = CalculateRelativeVolume(quoteVolumes, 20);
+                var atrPercent = CalculateAtrPercent(highs, lows, closes, 14);
+                var volatilityPercent = CalculateVolatilityPercent(closes, 20);
                 var snapshot = new TechnicalMarketSnapshot
                 {
                     Symbol = symbol,
@@ -119,6 +129,8 @@ public sealed class BinanceMarketService(
                     MacdHistogram = histogram,
                     PreviousMacdHistogram = previousHistogram,
                     RelativeVolume = relativeVolume,
+                    AtrPercent = atrPercent,
+                    VolatilityPercent = volatilityPercent,
                     Interval = interval
                 };
                 return (symbol, snapshot);
@@ -266,6 +278,70 @@ public sealed class BinanceMarketService(
         }
 
         return decimal.Round(current / avg, 4);
+    }
+
+    private static decimal CalculateAtrPercent(IReadOnlyList<decimal> highs, IReadOnlyList<decimal> lows, IReadOnlyList<decimal> closes, int period)
+    {
+        var count = Math.Min(highs.Count, Math.Min(lows.Count, closes.Count));
+        if (count <= period + 1)
+        {
+            return 0m;
+        }
+
+        var trs = new List<decimal>(count - 1);
+        for (var i = 1; i < count; i++)
+        {
+            var high = highs[i];
+            var low = lows[i];
+            var prevClose = closes[i - 1];
+            var tr = Math.Max(high - low, Math.Max(Math.Abs(high - prevClose), Math.Abs(low - prevClose)));
+            trs.Add(Math.Max(0m, tr));
+        }
+
+        if (trs.Count < period)
+        {
+            return 0m;
+        }
+
+        var atr = trs.Skip(Math.Max(0, trs.Count - period)).Take(period).DefaultIfEmpty(0m).Average();
+        var last = closes[^1];
+        if (last <= 0m)
+        {
+            return 0m;
+        }
+
+        return decimal.Round((atr / last) * 100m, 4);
+    }
+
+    private static decimal CalculateVolatilityPercent(IReadOnlyList<decimal> closes, int lookback)
+    {
+        if (closes.Count < lookback + 1)
+        {
+            return 0m;
+        }
+
+        var returns = new List<decimal>(lookback);
+        var start = closes.Count - lookback - 1;
+        for (var i = start + 1; i < closes.Count; i++)
+        {
+            var prev = closes[i - 1];
+            if (prev <= 0m)
+            {
+                continue;
+            }
+
+            returns.Add((closes[i] - prev) / prev);
+        }
+
+        if (returns.Count == 0)
+        {
+            return 0m;
+        }
+
+        var mean = returns.Average();
+        var variance = returns.Select(r => (r - mean) * (r - mean)).DefaultIfEmpty(0m).Average();
+        var std = (decimal)Math.Sqrt((double)Math.Max(0m, variance));
+        return decimal.Round(std * 100m, 4);
     }
 
     private sealed class BinanceTickerDto

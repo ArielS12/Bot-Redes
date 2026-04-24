@@ -126,6 +126,8 @@ public sealed class TechnicalMarketSnapshot
     public decimal MacdHistogram { get; set; }
     public decimal PreviousMacdHistogram { get; set; }
     public decimal RelativeVolume { get; set; }
+    public decimal AtrPercent { get; set; }
+    public decimal VolatilityPercent { get; set; }
     public string Interval { get; set; } = "1m";
 }
 

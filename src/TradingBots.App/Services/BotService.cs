@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using System.Collections.Concurrent;
 using TradingBots.App.Data;
 using TradingBots.App.Models;
 
@@ -34,9 +35,17 @@ public sealed class BotService(
     private const decimal PullbackMaxAbsChange24hPercent = 12m;
     /// <summary>Pullback: separacion EMA como proxy de riesgo en entrada; Momentum la ignora (tendencia fuerte = gap amplio).</summary>
     private const decimal PullbackMaxEmaSpreadPercentOfPrice = 2.5m;
+    private const decimal MaxAtrPercentForEntry = 2.8m;
+    private const decimal MaxVolatilityPercentForEntry = 1.4m;
+    private const decimal MinTrendSpreadPercentForEntry = 0.03m;
+    private const decimal BaseRiskPercentPerTrade = 0.50m;
+    private const int ExecutionFailureCircuitThreshold = 3;
+    private static readonly TimeSpan ExecutionFailureCircuitDuration = TimeSpan.FromMinutes(20);
     private const int MinClosedTradesForAdaptive = 100;
     private static readonly TimeSpan RiskAdjustmentCooldown = TimeSpan.FromHours(6);
     private static readonly TimeSpan AutoScaleCooldown = TimeSpan.FromHours(6);
+    private static readonly ConcurrentDictionary<Guid, int> BotExecutionFailures = new();
+    private static readonly ConcurrentDictionary<string, DateTime> SymbolCircuitOpenUntilUtc = new(StringComparer.OrdinalIgnoreCase);
 
     public async Task<IReadOnlyCollection<TradingBot>> GetBotsAsync() =>
         await dbContext.Bots
@@ -355,7 +364,8 @@ public sealed class BotService(
 
                     return ShouldBuy(bot.StrategyType, x.Snapshot) &&
                            PassesMultiTimeframeTrend(bot.StrategyType, tf5, tf15) &&
-                           PassesLiquidityAndVolume(marketSnapshot[x.Symbol], x.Snapshot);
+                           PassesLiquidityAndVolume(marketSnapshot[x.Symbol], x.Snapshot) &&
+                           PassesRegimeFilter(bot.StrategyType, x.Snapshot);
                 })
                 .OrderByDescending(x => ScoreBuyCandidate(bot.StrategyType, x.Snapshot))
                 .FirstOrDefault();
@@ -399,9 +409,13 @@ public sealed class BotService(
             if (buySignal && !blockPullbackVolatileDay && !blockPullbackEmaSpread)
             {
                 var symbol = buyCandidate!.Symbol;
+                if (IsSymbolCircuitOpen(symbol))
+                {
+                    bot.LastExecutionError = $"Circuit breaker activo para {symbol}. Reintento diferido.";
+                    continue;
+                }
                 var entryPrice = buyCandidate.Snapshot.LastPrice;
-                var perTradeLimit = Math.Max(0m, bot.MaxPositionPerTradeUsdt);
-                var quoteToUse = Math.Min(perTradeLimit, remainingBudget);
+                var quoteToUse = ComputeRiskSizedQuote(bot, remainingBudget, buyCandidate.Snapshot);
                 if (quoteToUse >= MinQuoteOrderUsdt)
                 {
                     MlBuyEvaluation? mlEval = null;
@@ -467,6 +481,7 @@ public sealed class BotService(
 
                     if (fill is not null && fill.ExecutedQuantity > 0 && fill.AveragePrice > 0)
                     {
+                        ResetExecutionFailure(bot);
                         var positionQtyBeforeBuy = bot.PositionQuantity;
                         var previousCost = bot.PositionQuantity * bot.AverageEntryPrice;
                         var fillCost = fill.ExecutedQuantity * fill.AveragePrice;
@@ -510,6 +525,7 @@ public sealed class BotService(
                     else if (realTradingEnabled)
                     {
                         bot.LastExecutionError = tradeExecutionService.GetLastExecutionError();
+                        RegisterExecutionFailure(bot, symbol);
                     }
                 }
             }
@@ -524,15 +540,21 @@ public sealed class BotService(
                                        profitableNow &&
                                        pnlPct >= bot.TakeProfit1Percent &&
                                        bot.TakeProfit1SellPercent > 0m;
-                // Siempre un unico SELL con toda la posicion: el TP1 parcial (p.ej. 50%) + cierre del resto
-                // duplicaba filas en Trades con cantidades ~mitad cada una.
                 var shouldExit = requestFullExit || requestPartialTp;
                 if (!shouldExit)
                 {
                     goto skipSell;
                 }
 
-                var qtyToSell = bot.PositionQuantity;
+                var qtyToSell = requestPartialTp && !requestFullExit
+                    ? decimal.Round(
+                        Math.Max(
+                            bot.PositionQuantity * (Math.Clamp(bot.TakeProfit1SellPercent, 0m, 100m) / 100m),
+                            Math.Min(bot.PositionQuantity, 0.000001m)),
+                        8,
+                        MidpointRounding.ToZero)
+                    : bot.PositionQuantity;
+                qtyToSell = Math.Min(qtyToSell, bot.PositionQuantity);
 
                 var fill = realTradingEnabled
                     ? await tradeExecutionService.MarketSellAsync(activeSymbol, qtyToSell, bot.Id)
@@ -561,6 +583,7 @@ public sealed class BotService(
 
                 if (fill is not null && fill.ExecutedQuantity > 0 && fill.AveragePrice > 0)
                 {
+                    ResetExecutionFailure(bot);
                     var realized = (fill.AveragePrice - bot.AverageEntryPrice) * fill.ExecutedQuantity;
                     realized = decimal.Round(realized, 2);
                     bot.RealizedPnlUsdt += realized;
@@ -585,6 +608,10 @@ public sealed class BotService(
                         bot.PositionOpenedAtUtc = null;
                         bot.PeakPriceSinceEntry = 0m;
                         bot.TakeProfit1Taken = false;
+                    }
+                    else if (requestPartialTp && !requestFullExit)
+                    {
+                        bot.TakeProfit1Taken = true;
                     }
                     bot.LastExecutionError = string.Empty;
                     dbContext.Trades.Add(new TradeExecution
@@ -611,6 +638,7 @@ public sealed class BotService(
                 else if (realTradingEnabled)
                 {
                     bot.LastExecutionError = tradeExecutionService.GetLastExecutionError();
+                    RegisterExecutionFailure(bot, activeSymbol);
                 }
             }
             skipSell:;
@@ -784,7 +812,8 @@ public sealed class BotService(
                     technical15mBySymbol.TryGetValue(x.Symbol, out var tf15) &&
                     ShouldBuy(bot.StrategyType, x.Snapshot) &&
                     PassesMultiTimeframeTrend(bot.StrategyType, tf5, tf15) &&
-                    PassesLiquidityAndVolume(marketSnapshot[x.Symbol], x.Snapshot))
+                    PassesLiquidityAndVolume(marketSnapshot[x.Symbol], x.Snapshot) &&
+                    PassesRegimeFilter(bot.StrategyType, x.Snapshot))
                 .OrderByDescending(x => ScoreBuyCandidate(bot.StrategyType, x.Snapshot))
                 .FirstOrDefault();
 
@@ -911,6 +940,21 @@ public sealed class BotService(
     private static bool PassesLiquidityAndVolume(MarketTicker ticker, TechnicalMarketSnapshot technical) =>
         ticker.QuoteVolume24h >= MinQuoteVolume24hUsdt && technical.RelativeVolume >= MinRelativeVolume;
 
+    private static bool PassesRegimeFilter(StrategyType strategy, TechnicalMarketSnapshot technical)
+    {
+        if (technical.LastPrice <= 0m)
+        {
+            return false;
+        }
+
+        var emaSpreadPct = Math.Abs(technical.EmaFast - technical.EmaSlow) / technical.LastPrice * 100m;
+        var trendOk = strategy == StrategyType.Momentum
+            ? emaSpreadPct >= MinTrendSpreadPercentForEntry
+            : emaSpreadPct <= PullbackMaxEmaSpreadPercentOfPrice;
+        var volatilityOk = technical.VolatilityPercent <= MaxVolatilityPercentForEntry || technical.AtrPercent <= MaxAtrPercentForEntry;
+        return trendOk && volatilityOk;
+    }
+
     private static bool PassesMultiTimeframeTrend(StrategyType strategy, TechnicalMarketSnapshot tf5, TechnicalMarketSnapshot tf15) =>
         strategy == StrategyType.Momentum
             ? tf5.EmaFast > tf5.EmaSlow && tf15.EmaFast > tf15.EmaSlow && tf15.MacdLine >= (tf15.MacdSignal - 0.0002m)
@@ -939,6 +983,65 @@ public sealed class BotService(
         if (upper.EndsWith("USDC", StringComparison.Ordinal)) return "USDC";
         if (upper.EndsWith("BUSD", StringComparison.Ordinal)) return "BUSD";
         return "USDT";
+    }
+
+    private static decimal ComputeRiskSizedQuote(TradingBot bot, decimal remainingBudget, TechnicalMarketSnapshot snapshot)
+    {
+        var perTradeLimit = Math.Max(0m, bot.MaxPositionPerTradeUsdt);
+        var maxAllowed = Math.Min(perTradeLimit, Math.Max(0m, remainingBudget));
+        if (maxAllowed <= 0m)
+        {
+            return 0m;
+        }
+
+        var stopDistancePct = Math.Max(0.20m, bot.StopLossPercent) / 100m;
+        var volatilityPenalty = 1m + Math.Max(0m, snapshot.VolatilityPercent);
+        var atrPenalty = 1m + Math.Max(0m, snapshot.AtrPercent / 2m);
+        var riskBudgetUsdt = bot.BudgetUsdt * (BaseRiskPercentPerTrade / 100m) / Math.Max(1m, volatilityPenalty * atrPenalty);
+        var quoteByRisk = stopDistancePct <= 0m ? maxAllowed : riskBudgetUsdt / stopDistancePct;
+        return decimal.Round(Math.Min(maxAllowed, Math.Max(0m, quoteByRisk)), 2, MidpointRounding.ToZero);
+    }
+
+    private bool IsSymbolCircuitOpen(string symbol)
+    {
+        if (!SymbolCircuitOpenUntilUtc.TryGetValue(symbol, out var until))
+        {
+            return false;
+        }
+
+        if (DateTime.UtcNow >= until)
+        {
+            SymbolCircuitOpenUntilUtc.TryRemove(symbol, out _);
+            return false;
+        }
+
+        return true;
+    }
+
+    private void ResetExecutionFailure(TradingBot bot)
+    {
+        BotExecutionFailures.TryRemove(bot.Id, out _);
+        if (!string.IsNullOrWhiteSpace(bot.PositionSymbol))
+        {
+            SymbolCircuitOpenUntilUtc.TryRemove(bot.PositionSymbol, out _);
+        }
+    }
+
+    private void RegisterExecutionFailure(TradingBot bot, string symbol)
+    {
+        var failures = BotExecutionFailures.AddOrUpdate(bot.Id, 1, (_, oldValue) => oldValue + 1);
+        if (failures < ExecutionFailureCircuitThreshold)
+        {
+            return;
+        }
+
+        var until = DateTime.UtcNow.Add(ExecutionFailureCircuitDuration);
+        SymbolCircuitOpenUntilUtc[symbol] = until;
+        bot.State = BotState.Stopped;
+        bot.LastExecutionError = $"Circuit breaker: {failures} fallos consecutivos en {symbol}. Bot pausado hasta intervención manual.";
+        bot.CooldownSymbol = symbol;
+        bot.CooldownUntilUtc = until;
+        logger.LogWarning("Circuit breaker activado en bot {BotName} para {Symbol}. Fallos={Failures}", bot.Name, symbol, failures);
     }
 
     private static void ApplyRequest(TradingBot bot, CreateOrUpdateBotRequest request)

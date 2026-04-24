@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using Microsoft.EntityFrameworkCore;
 using TradingBots.App.Data;
 using TradingBots.App.Models;
 
@@ -13,6 +14,7 @@ public interface IBinanceTradeExecutionService
     Task<decimal> GetQuoteAssetFreeBalanceAsync(string quoteAsset, CancellationToken ct = default);
     Task<BinanceAccountSummary> GetAccountSummaryAsync(CancellationToken ct = default);
     Task<BinanceHealthView> GetHealthAsync(CancellationToken ct = default);
+    Task ReconcileOpenPositionsAsync(CancellationToken ct = default);
     string GetLastExecutionError();
     Task<TradeFillResult?> MarketBuyAsync(string symbol, decimal quoteOrderQty, Guid? botId = null, CancellationToken ct = default);
     Task<TradeFillResult?> MarketSellAsync(string symbol, decimal quantity, Guid? botId = null, CancellationToken ct = default);
@@ -172,6 +174,97 @@ public sealed class BinanceTradeExecutionService(
             ReconcileRecoveryRatePercent = recoveryRate,
             LastExecutionError = _lastExecutionError
         };
+    }
+
+    public async Task ReconcileOpenPositionsAsync(CancellationToken ct = default)
+    {
+        var settings = await settingsService.GetActiveSettingsAsync();
+        if (!CanTradeReal(settings))
+        {
+            return;
+        }
+
+        AccountInfoResponse? account;
+        try
+        {
+            account = await GetAccountInfoAsync(settings, ct);
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "No se pudo reconciliar posiciones abiertas (cuenta no disponible).");
+            return;
+        }
+
+        if (account?.Balances is null || account.Balances.Count == 0)
+        {
+            return;
+        }
+
+        var balances = account.Balances.ToDictionary(
+            b => b.Asset.ToUpperInvariant(),
+            b => Parse(b.Free) + Parse(b.Locked),
+            StringComparer.OrdinalIgnoreCase);
+
+        var bots = await dbContext.Bots
+            .Where(b => b.State == BotState.Running && b.PositionQuantity > 0m && !string.IsNullOrWhiteSpace(b.PositionSymbol))
+            .ToListAsync(ct);
+        foreach (var bot in bots)
+        {
+            var symbol = bot.PositionSymbol;
+            var baseAsset = ResolveBaseAsset(symbol);
+            if (string.IsNullOrWhiteSpace(baseAsset))
+            {
+                continue;
+            }
+
+            if (!balances.TryGetValue(baseAsset, out var availableBase))
+            {
+                continue;
+            }
+
+            var availableRounded = decimal.Round(Math.Max(0m, availableBase), 8, MidpointRounding.ToZero);
+            var localRounded = decimal.Round(Math.Max(0m, bot.PositionQuantity), 8, MidpointRounding.ToZero);
+            var drift = localRounded - availableRounded;
+
+            if (drift <= 0.000001m)
+            {
+                continue;
+            }
+
+            if (availableRounded <= 0m)
+            {
+                bot.PositionQuantity = 0m;
+                bot.AverageEntryPrice = 0m;
+                bot.PositionSymbol = string.Empty;
+                bot.PositionOpenedAtUtc = null;
+                bot.PeakPriceSinceEntry = 0m;
+                bot.TakeProfit1Taken = false;
+                bot.UnrealizedPnlUsdt = 0m;
+                bot.LastExecutionError = "Reconciliacion: posicion local cerrada (sin balance base en exchange).";
+            }
+            else
+            {
+                bot.PositionQuantity = availableRounded;
+                bot.LastExecutionError = $"Reconciliacion: cantidad ajustada de {localRounded:0.########} a {availableRounded:0.########}.";
+            }
+
+            bot.UpdatedAtUtc = DateTime.UtcNow;
+            dbContext.OrderAuditEvents.Add(new OrderAuditEvent
+            {
+                BotId = bot.Id,
+                Symbol = symbol,
+                Side = "SYNC",
+                Stage = "reconcile-position",
+                Status = "adjusted",
+                Message = bot.LastExecutionError,
+                RequestedBaseQty = localRounded,
+                ExecutedQty = availableRounded,
+                IsLive = true,
+                CreatedAtUtc = DateTime.UtcNow
+            });
+        }
+
+        await dbContext.SaveChangesAsync(ct);
     }
 
     public async Task<TradeFillResult?> MarketSellAsync(string symbol, decimal quantity, Guid? botId = null, CancellationToken ct = default)
@@ -527,6 +620,21 @@ public sealed class BinanceTradeExecutionService(
         var sym = symbol.Length > 8 ? symbol[..8] : symbol;
         var nonce = Guid.NewGuid().ToString("N")[..8];
         return $"tbp-{side.ToLowerInvariant()}-{sym.ToLowerInvariant()}-{botPart}-{nonce}";
+    }
+
+    private static string ResolveBaseAsset(string symbol)
+    {
+        var upper = symbol.ToUpperInvariant();
+        var suffixes = new[] { "USDT", "USDC", "BUSD", "FDUSD", "BTC", "ETH" };
+        foreach (var suffix in suffixes)
+        {
+            if (upper.EndsWith(suffix, StringComparison.Ordinal) && upper.Length > suffix.Length)
+            {
+                return upper[..^suffix.Length];
+            }
+        }
+
+        return string.Empty;
     }
 
     private static string ReadQueryValue(string query, string key)
