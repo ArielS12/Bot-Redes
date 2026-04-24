@@ -416,6 +416,12 @@ public sealed class BotService(
                 }
                 var entryPrice = buyCandidate.Snapshot.LastPrice;
                 var quoteToUse = ComputeRiskSizedQuote(bot, remainingBudget, buyCandidate.Snapshot);
+                if (quoteToUse < MinQuoteOrderUsdt)
+                {
+                    bot.LastExecutionError =
+                        $"Señal BUY en {symbol} pero notional {quoteToUse:0.##} USDT < mínimo {MinQuoteOrderUsdt:0.##} (aumenta Budget/Max por trade o revisa ATR/volatilidad en régimen).";
+                }
+
                 if (quoteToUse >= MinQuoteOrderUsdt)
                 {
                     MlBuyEvaluation? mlEval = null;
@@ -999,7 +1005,16 @@ public sealed class BotService(
         var atrPenalty = 1m + Math.Max(0m, snapshot.AtrPercent / 2m);
         var riskBudgetUsdt = bot.BudgetUsdt * (BaseRiskPercentPerTrade / 100m) / Math.Max(1m, volatilityPenalty * atrPenalty);
         var quoteByRisk = stopDistancePct <= 0m ? maxAllowed : riskBudgetUsdt / stopDistancePct;
-        return decimal.Round(Math.Min(maxAllowed, Math.Max(0m, quoteByRisk)), 2, MidpointRounding.ToZero);
+        var sized = decimal.Round(Math.Min(maxAllowed, Math.Max(0m, quoteByRisk)), 2, MidpointRounding.ToZero);
+
+        // Con budgets pequeños (p.ej. 20 USDT) el riesgo porcentual puede quedar bajo el notional mínimo de Binance/paper;
+        // si el tope lo permite, subimos al mínimo operable para no bloquear el ciclo indefinidamente.
+        if (sized > 0m && sized < MinQuoteOrderUsdt && maxAllowed >= MinQuoteOrderUsdt)
+        {
+            sized = MinQuoteOrderUsdt;
+        }
+
+        return sized;
     }
 
     private bool IsSymbolCircuitOpen(string symbol)
