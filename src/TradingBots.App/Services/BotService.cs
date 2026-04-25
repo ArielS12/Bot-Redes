@@ -33,8 +33,13 @@ public sealed class BotService(
     private const decimal MinRelativeVolume = 0.7m;
     /// <summary>Pullback: no entrar si el dia ya se movio demasiado (evita perseguir extremos).</summary>
     private const decimal PullbackMaxAbsChange24hPercent = 12m;
-    /// <summary>Pullback: separacion EMA como proxy de riesgo en entrada; Momentum la ignora (tendencia fuerte = gap amplio).</summary>
+    /// <summary>Pullback: separacion EMA maxima para evitar entradas en contra con tendencia estirada.</summary>
     private const decimal PullbackMaxEmaSpreadPercentOfPrice = 2.5m;
+    /// <summary>Momentum: evita entrar cuando el spread EMA indica sobreextension (chasing).</summary>
+    private const decimal MomentumMaxEmaSpreadPercentOfPrice = 0.85m;
+    /// <summary>Momentum: si el dia ya va muy extendido y RSI esta alto, espera mejor entrada.</summary>
+    private const decimal MomentumMaxAbsChange24hPercentForEntry = 8m;
+    private const decimal MomentumMaxRsiOnStrongDailyMove = 62m;
     private const decimal MaxAtrPercentForEntry = 2.8m;
     private const decimal MaxVolatilityPercentForEntry = 1.4m;
     private const decimal MinTrendSpreadPercentForEntry = 0.03m;
@@ -365,7 +370,7 @@ public sealed class BotService(
                     return ShouldBuy(bot.StrategyType, x.Snapshot) &&
                            PassesMultiTimeframeTrend(bot.StrategyType, tf5, tf15) &&
                            PassesLiquidityAndVolume(marketSnapshot[x.Symbol], x.Snapshot) &&
-                           PassesRegimeFilter(bot.StrategyType, x.Snapshot);
+                           PassesRegimeFilter(bot.StrategyType, x.Snapshot, marketSnapshot[x.Symbol]);
                 })
                 .OrderByDescending(x => ScoreBuyCandidate(bot.StrategyType, x.Snapshot))
                 .FirstOrDefault();
@@ -819,7 +824,7 @@ public sealed class BotService(
                     ShouldBuy(bot.StrategyType, x.Snapshot) &&
                     PassesMultiTimeframeTrend(bot.StrategyType, tf5, tf15) &&
                     PassesLiquidityAndVolume(marketSnapshot[x.Symbol], x.Snapshot) &&
-                    PassesRegimeFilter(bot.StrategyType, x.Snapshot))
+                    PassesRegimeFilter(bot.StrategyType, x.Snapshot, marketSnapshot[x.Symbol]))
                 .OrderByDescending(x => ScoreBuyCandidate(bot.StrategyType, x.Snapshot))
                 .FirstOrDefault();
 
@@ -925,7 +930,7 @@ public sealed class BotService(
               technical.PreviousMacdHistogram <= 0m &&
               technical.MacdHistogram > 0m &&
               technical.Rsi14 >= 50m &&
-              technical.Rsi14 <= 76m
+              technical.Rsi14 <= 68m
             : technical.EmaFast >= technical.EmaSlow &&
               technical.Rsi14 <= 38m &&
               technical.MacdHistogram > technical.PreviousMacdHistogram;
@@ -946,7 +951,7 @@ public sealed class BotService(
     private static bool PassesLiquidityAndVolume(MarketTicker ticker, TechnicalMarketSnapshot technical) =>
         ticker.QuoteVolume24h >= MinQuoteVolume24hUsdt && technical.RelativeVolume >= MinRelativeVolume;
 
-    private static bool PassesRegimeFilter(StrategyType strategy, TechnicalMarketSnapshot technical)
+    private static bool PassesRegimeFilter(StrategyType strategy, TechnicalMarketSnapshot technical, MarketTicker ticker)
     {
         if (technical.LastPrice <= 0m)
         {
@@ -955,10 +960,13 @@ public sealed class BotService(
 
         var emaSpreadPct = Math.Abs(technical.EmaFast - technical.EmaSlow) / technical.LastPrice * 100m;
         var trendOk = strategy == StrategyType.Momentum
-            ? emaSpreadPct >= MinTrendSpreadPercentForEntry
+            ? emaSpreadPct >= MinTrendSpreadPercentForEntry && emaSpreadPct <= MomentumMaxEmaSpreadPercentOfPrice
             : emaSpreadPct <= PullbackMaxEmaSpreadPercentOfPrice;
         var volatilityOk = technical.VolatilityPercent <= MaxVolatilityPercentForEntry || technical.AtrPercent <= MaxAtrPercentForEntry;
-        return trendOk && volatilityOk;
+        var antiChaseOk = strategy != StrategyType.Momentum ||
+                          Math.Abs(ticker.PriceChangePercent24h) < MomentumMaxAbsChange24hPercentForEntry ||
+                          technical.Rsi14 <= MomentumMaxRsiOnStrongDailyMove;
+        return trendOk && volatilityOk && antiChaseOk;
     }
 
     private static bool PassesMultiTimeframeTrend(StrategyType strategy, TechnicalMarketSnapshot tf5, TechnicalMarketSnapshot tf15) =>
@@ -1084,3 +1092,5 @@ public sealed class BotService(
         bot.UpdatedAtUtc = DateTime.UtcNow;
     }
 }
+
+
