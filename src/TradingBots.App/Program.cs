@@ -338,7 +338,7 @@ using (var scope = app.Services.CreateScope())
         END
         IF COL_LENGTH('BinanceSettings', 'SupervisorInactiveMinutes') IS NULL
         BEGIN
-            ALTER TABLE [BinanceSettings] ADD [SupervisorInactiveMinutes] int NOT NULL CONSTRAINT DF_BinanceSettings_SupervisorInactiveMinutes DEFAULT(120);
+            ALTER TABLE [BinanceSettings] ADD [SupervisorInactiveMinutes] int NOT NULL CONSTRAINT DF_BinanceSettings_SupervisorInactiveMinutes DEFAULT(180);
         END
         IF COL_LENGTH('BinanceSettings', 'RebalanceOutOfTopCycles') IS NULL
         BEGIN

@@ -56,7 +56,7 @@ public sealed class BinanceSettingsService(AppDbContext dbContext) : IBinanceSet
         settings.GlobalKillSwitch = request.GlobalKillSwitch;
         settings.MaxAutoBots = Math.Clamp(request.MaxAutoBots, 0, 50);
         settings.AutoControlTuningEnabled = request.AutoControlTuningEnabled;
-        settings.SupervisorInactiveMinutes = Math.Clamp(request.SupervisorInactiveMinutes, 60, 240);
+        settings.SupervisorInactiveMinutes = Math.Clamp(request.SupervisorInactiveMinutes, 60, 300);
         settings.RebalanceOutOfTopCycles = Math.Clamp(request.RebalanceOutOfTopCycles, 2, 6);
         settings.MinActiveBeforePauseMinutes = Math.Clamp(request.MinActiveBeforePauseMinutes, 10, 90);
         settings.MinStoppedBeforeReactivateMinutes = Math.Clamp(request.MinStoppedBeforeReactivateMinutes, 2, 30);
@@ -107,7 +107,7 @@ public sealed class BinanceSettingsService(AppDbContext dbContext) : IBinanceSet
         GlobalKillSwitch = settings.GlobalKillSwitch,
         MaxAutoBots = Math.Clamp(settings.MaxAutoBots, 0, 50),
         AutoControlTuningEnabled = settings.AutoControlTuningEnabled,
-        SupervisorInactiveMinutes = Math.Clamp(settings.SupervisorInactiveMinutes <= 0 ? 120 : settings.SupervisorInactiveMinutes, 60, 240),
+        SupervisorInactiveMinutes = Math.Clamp(settings.SupervisorInactiveMinutes <= 0 ? 180 : settings.SupervisorInactiveMinutes, 60, 300),
         RebalanceOutOfTopCycles = Math.Clamp(settings.RebalanceOutOfTopCycles <= 0 ? 3 : settings.RebalanceOutOfTopCycles, 2, 6),
         MinActiveBeforePauseMinutes = Math.Clamp(settings.MinActiveBeforePauseMinutes <= 0 ? 20 : settings.MinActiveBeforePauseMinutes, 10, 90),
         MinStoppedBeforeReactivateMinutes = Math.Clamp(settings.MinStoppedBeforeReactivateMinutes <= 0 ? 5 : settings.MinStoppedBeforeReactivateMinutes, 2, 30),

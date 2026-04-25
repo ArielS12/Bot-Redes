@@ -30,16 +30,16 @@ public sealed class BotService(
     /// <summary>Mínimo de notional por orden de compra (coherente con filtros típicos MIN_NOTIONAL en Binance).</summary>
     private const decimal MinQuoteOrderUsdt = 10m;
     private const decimal MinQuoteVolume24hUsdt = 750_000m;
-    private const decimal MinRelativeVolume = 0.7m;
+    private const decimal MinRelativeVolume = 0.6m;
     /// <summary>Pullback: no entrar si el dia ya se movio demasiado (evita perseguir extremos).</summary>
     private const decimal PullbackMaxAbsChange24hPercent = 12m;
     /// <summary>Pullback: separacion EMA maxima para evitar entradas en contra con tendencia estirada.</summary>
     private const decimal PullbackMaxEmaSpreadPercentOfPrice = 2.5m;
     /// <summary>Momentum: evita entrar cuando el spread EMA indica sobreextension (chasing).</summary>
-    private const decimal MomentumMaxEmaSpreadPercentOfPrice = 0.85m;
+    private const decimal MomentumMaxEmaSpreadPercentOfPrice = 1.0m;
     /// <summary>Momentum: si el dia ya va muy extendido y RSI esta alto, espera mejor entrada.</summary>
-    private const decimal MomentumMaxAbsChange24hPercentForEntry = 8m;
-    private const decimal MomentumMaxRsiOnStrongDailyMove = 62m;
+    private const decimal MomentumMaxAbsChange24hPercentForEntry = 9m;
+    private const decimal MomentumMaxRsiOnStrongDailyMove = 64m;
     private const decimal MaxAtrPercentForEntry = 2.8m;
     private const decimal MaxVolatilityPercentForEntry = 1.4m;
     private const decimal MinTrendSpreadPercentForEntry = 0.03m;
@@ -971,7 +971,7 @@ public sealed class BotService(
 
     private static bool PassesMultiTimeframeTrend(StrategyType strategy, TechnicalMarketSnapshot tf5, TechnicalMarketSnapshot tf15) =>
         strategy == StrategyType.Momentum
-            ? tf5.EmaFast > tf5.EmaSlow && tf15.EmaFast > tf15.EmaSlow && tf15.MacdLine >= (tf15.MacdSignal - 0.0002m)
+            ? tf5.EmaFast > tf5.EmaSlow && tf15.EmaFast > tf15.EmaSlow && tf15.MacdLine >= (tf15.MacdSignal - 0.0005m)
             : tf15.EmaFast >= tf15.EmaSlow && tf5.Rsi14 <= 55m;
 
     private static string BuildExitState(TradingBot bot, bool tp1Ready, bool tp2Ready, bool trailingArmed, bool timeStopHit, bool sellSignal)

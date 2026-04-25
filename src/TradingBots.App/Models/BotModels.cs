@@ -230,7 +230,7 @@ public sealed class BinanceConnectionSettings
     public bool GlobalKillSwitch { get; set; } = true;
     public int MaxAutoBots { get; set; } = 10;
     public bool AutoControlTuningEnabled { get; set; } = true;
-    public int SupervisorInactiveMinutes { get; set; } = 120;
+    public int SupervisorInactiveMinutes { get; set; } = 180;
     public int RebalanceOutOfTopCycles { get; set; } = 3;
     public int MinActiveBeforePauseMinutes { get; set; } = 20;
     public int MinStoppedBeforeReactivateMinutes { get; set; } = 5;
@@ -258,7 +258,7 @@ public sealed class UpdateBinanceSettingsRequest
     public bool GlobalKillSwitch { get; set; } = true;
     public int MaxAutoBots { get; set; } = 10;
     public bool AutoControlTuningEnabled { get; set; } = true;
-    public int SupervisorInactiveMinutes { get; set; } = 120;
+    public int SupervisorInactiveMinutes { get; set; } = 180;
     public int RebalanceOutOfTopCycles { get; set; } = 3;
     public int MinActiveBeforePauseMinutes { get; set; } = 20;
     public int MinStoppedBeforeReactivateMinutes { get; set; } = 5;

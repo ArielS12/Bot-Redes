@@ -23,7 +23,7 @@ public sealed class BotSupervisorService(
             return 0;
         }
 
-        var inactiveMinutes = Math.Clamp(settings.SupervisorInactiveMinutes <= 0 ? 120 : settings.SupervisorInactiveMinutes, 60, 300);
+        var inactiveMinutes = Math.Clamp(settings.SupervisorInactiveMinutes <= 0 ? 180 : settings.SupervisorInactiveMinutes, 60, 300);
         var inactiveWindow = TimeSpan.FromMinutes(inactiveMinutes);
         var now = DateTime.UtcNow;
         var recentAdvisorBuys = await BuildRecentBuySymbolsAsync(now);
