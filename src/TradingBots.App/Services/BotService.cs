@@ -873,20 +873,37 @@ public sealed class BotService(
                 }
                 else
                 {
-                    reason = "Sin setup de entrada: condiciones EMA/MACD/RSI no alineadas.";
-                    if (marketSnapshot.TryGetValue(activeSymbol, out var m) && m.QuoteVolume24h < MinQuoteVolume24hUsdt)
+                    reason = "Sin setup de entrada.";
+                    if (!marketSnapshot.TryGetValue(activeSymbol, out var m))
+                    {
+                        reason = "Sin ticker de mercado para el simbolo activo.";
+                    }
+                    else if (m.QuoteVolume24h < MinQuoteVolume24hUsdt)
                     {
                         reason = "Bloqueado por liquidez: volumen 24h insuficiente.";
                     }
-                    else if (technicalBySymbol.TryGetValue(activeSymbol, out var one) && one.RelativeVolume < MinRelativeVolume)
+                    else if (activeTechnical.RelativeVolume < MinRelativeVolume)
                     {
                         reason = "Bloqueado por volumen relativo bajo.";
                     }
-                    else if (technical5mBySymbol.TryGetValue(activeSymbol, out var tf5) &&
-                             technical15mBySymbol.TryGetValue(activeSymbol, out var tf15) &&
-                             !PassesMultiTimeframeTrend(bot.StrategyType, tf5, tf15))
+                    else if (!technical5mBySymbol.TryGetValue(activeSymbol, out var tf5) ||
+                             !technical15mBySymbol.TryGetValue(activeSymbol, out var tf15))
+                    {
+                        reason = "Sin datos 5m/15m para confirmacion multi-timeframe.";
+                    }
+                    else if (!ShouldBuy(bot.StrategyType, activeTechnical))
+                    {
+                        reason = DescribeBuySignalGap(bot.StrategyType, activeTechnical);
+                    }
+                    else if (!PassesMultiTimeframeTrend(bot.StrategyType, tf5, tf15))
                     {
                         reason = "Bloqueado por confirmacion multi-timeframe (5m/15m).";
+                    }
+                    else
+                    {
+                        var regimeMsg = DescribeRegimeFailureIfAny(bot.StrategyType, activeTechnical, m);
+                        reason = regimeMsg
+                            ?? "Ningun simbolo del bot cumple todos los filtros a la vez (revisa otros pares en la lista).";
                     }
                 }
 
@@ -923,17 +940,112 @@ public sealed class BotService(
         return result;
     }
 
+    private static bool MomentumMacdHistogramEntryOk(TechnicalMarketSnapshot technical) =>
+        (technical.PreviousMacdHistogram <= 0m && technical.MacdHistogram > 0m) ||
+        (technical.MacdHistogram > 0m && technical.MacdHistogram > technical.PreviousMacdHistogram);
+
     private static bool ShouldBuy(StrategyType strategy, TechnicalMarketSnapshot technical) =>
         strategy == StrategyType.Momentum
             ? technical.EmaFast > technical.EmaSlow &&
               technical.MacdLine > technical.MacdSignal &&
-              technical.PreviousMacdHistogram <= 0m &&
-              technical.MacdHistogram > 0m &&
+              MomentumMacdHistogramEntryOk(technical) &&
               technical.Rsi14 >= 50m &&
               technical.Rsi14 <= 68m
             : technical.EmaFast >= technical.EmaSlow &&
               technical.Rsi14 <= 38m &&
               technical.MacdHistogram > technical.PreviousMacdHistogram;
+
+    private static string DescribeBuySignalGap(StrategyType strategy, TechnicalMarketSnapshot t)
+    {
+        if (strategy == StrategyType.Momentum)
+        {
+            if (t.EmaFast <= t.EmaSlow)
+            {
+                return "Momentum 1m: EMA rapida no por encima de la lenta.";
+            }
+
+            if (t.MacdLine <= t.MacdSignal)
+            {
+                return "Momentum 1m: linea MACD no por encima de la senal.";
+            }
+
+            if (!MomentumMacdHistogramEntryOk(t))
+            {
+                return "Momentum 1m: histograma MACD sin impulso (cruce por cero o expansion positiva).";
+            }
+
+            if (t.Rsi14 < 50m)
+            {
+                return $"Momentum 1m: RSI {t.Rsi14:0.#} bajo minimo de entrada (50).";
+            }
+
+            if (t.Rsi14 > 68m)
+            {
+                return $"Momentum 1m: RSI {t.Rsi14:0.#} sobre maximo de entrada (68).";
+            }
+        }
+        else
+        {
+            if (t.EmaFast < t.EmaSlow)
+            {
+                return "Pullback 1m: EMA rapida debajo de la lenta.";
+            }
+
+            if (t.Rsi14 > 38m)
+            {
+                return $"Pullback 1m: RSI {t.Rsi14:0.#} no en sobreventa (max 38).";
+            }
+
+            if (t.MacdHistogram <= t.PreviousMacdHistogram)
+            {
+                return "Pullback 1m: histograma MACD sin expansion vs vela anterior.";
+            }
+        }
+
+        return "Condicion de entrada 1m no cumplida.";
+    }
+
+    private static string? DescribeRegimeFailureIfAny(StrategyType strategy, TechnicalMarketSnapshot technical, MarketTicker ticker)
+    {
+        if (technical.LastPrice <= 0m)
+        {
+            return "Regimen: precio invalido en snapshot 1m.";
+        }
+
+        var emaSpreadPct = Math.Abs(technical.EmaFast - technical.EmaSlow) / technical.LastPrice * 100m;
+        if (strategy == StrategyType.Momentum)
+        {
+            if (emaSpreadPct < MinTrendSpreadPercentForEntry)
+            {
+                return $"Regimen: tendencia 1m debil (spread EMA {emaSpreadPct:0.###}% < min {MinTrendSpreadPercentForEntry}%).";
+            }
+
+            if (emaSpreadPct > MomentumMaxEmaSpreadPercentOfPrice)
+            {
+                return $"Regimen: spread EMA amplio anti-chase ({emaSpreadPct:0.###}% > {MomentumMaxEmaSpreadPercentOfPrice}%).";
+            }
+        }
+        else if (emaSpreadPct > PullbackMaxEmaSpreadPercentOfPrice)
+        {
+            return $"Regimen: separacion EMA 1m alta ({emaSpreadPct:0.###}% > {PullbackMaxEmaSpreadPercentOfPrice}%).";
+        }
+
+        var volatilityOk = technical.VolatilityPercent <= MaxVolatilityPercentForEntry ||
+                           technical.AtrPercent <= MaxAtrPercentForEntry;
+        if (!volatilityOk)
+        {
+            return $"Regimen: volatilidad/ATR 1m altos (vol%={technical.VolatilityPercent:0.##}, ATR%={technical.AtrPercent:0.##}).";
+        }
+
+        if (strategy == StrategyType.Momentum &&
+            !(Math.Abs(ticker.PriceChangePercent24h) < MomentumMaxAbsChange24hPercentForEntry ||
+              technical.Rsi14 <= MomentumMaxRsiOnStrongDailyMove))
+        {
+            return $"Regimen: dia extendido (|24h|={Math.Abs(ticker.PriceChangePercent24h):0.##}%) con RSI {technical.Rsi14:0.#} > {MomentumMaxRsiOnStrongDailyMove} (anti-chase).";
+        }
+
+        return null;
+    }
 
     private static bool ShouldSellBySignal(StrategyType strategy, TechnicalMarketSnapshot technical) =>
         strategy == StrategyType.Momentum
