@@ -25,11 +25,14 @@ public sealed class AutoTraderService(
         "UUSDT", "UUSDC"
     };
 
-    /// <summary>Umbral alineado con el analista (BUY mas estricto) mas sesgo por simbolo.</summary>
-    private const decimal MinAdjustedBuyScore = 5.05m;
+    /// <summary>Equilibrio: abre algo mas de flujo para muestras ML, manteniendo un umbral de calidad.</summary>
+    private const decimal MinAdjustedBuyScore = 4.9m;
+    /// <summary>Si el sesgo reciente del simbolo es negativo, exigimos score bruto mayor para evitar deterioro de win-rate.</summary>
+    private const decimal MinSymbolBiasForStandardEntry = -0.25m;
+    private const decimal MinRawScoreWhenBiasNegative = 5.2m;
 
-    /// <summary>Ventana alineada con el ciclo (~10s) y batches del analista; antes 5 min dejaba fuera sugerencias validas.</summary>
-    private const int SuggestionTtlMinutes = 12;
+    /// <summary>Ventana algo mas amplia para capturar mas setups validos entre ciclos del analista.</summary>
+    private const int SuggestionTtlMinutes = 18;
 
     /// <summary>Tras paradas operativas (supervisor inactividad o rebalanceo fuera del top), no usar el cooldown largo de settings.</summary>
     private static readonly TimeSpan RecycleCooldownAfterOperationalStop = TimeSpan.FromSeconds(90);
@@ -45,7 +48,7 @@ public sealed class AutoTraderService(
             .GroupBy(x => x.Symbol)
             .Select(g => g.OrderByDescending(x => x.CreatedAtUtc).First())
             .Where(x => x.Signal == "BUY" &&
-                        GetAdjustedScore(x, symbolBias) >= MinAdjustedBuyScore &&
+                        PassesQualityGate(x, symbolBias) &&
                         !AutopilotSymbolBlocklist.Contains(x.Symbol) &&
                         !IsStableStablePair(x.Symbol) &&
                         (x.Symbol.EndsWith("USDT", StringComparison.Ordinal) || x.Symbol.EndsWith("USDC", StringComparison.Ordinal)))
@@ -66,7 +69,7 @@ public sealed class AutoTraderService(
         var minActiveBeforePause = TimeSpan.FromMinutes(Math.Clamp(settings.MinActiveBeforePauseMinutes <= 0 ? 20 : settings.MinActiveBeforePauseMinutes, 10, 90));
         var minStoppedBeforeReactivate = TimeSpan.FromMinutes(Math.Clamp(settings.MinStoppedBeforeReactivateMinutes <= 0 ? 5 : settings.MinStoppedBeforeReactivateMinutes, 2, 30));
         var minStoppedAfterRiskMinutes = Math.Clamp(settings.MinStoppedAfterRiskStopMinutes <= 0 ? 45 : settings.MinStoppedAfterRiskStopMinutes, 15, 240);
-        var outOfTopCyclesToPause = Math.Clamp(settings.RebalanceOutOfTopCycles <= 0 ? 3 : settings.RebalanceOutOfTopCycles, 2, 6);
+        var outOfTopCyclesToPause = Math.Clamp(settings.RebalanceOutOfTopCycles <= 0 ? 4 : settings.RebalanceOutOfTopCycles, 2, 6);
         var existingAutoBots = await dbContext.Bots
             .Where(x => x.IsAutoManaged)
             .ToListAsync();
@@ -213,6 +216,23 @@ public sealed class AutoTraderService(
 
     private static decimal GetAdjustedScore(InvestmentSuggestion suggestion, IReadOnlyDictionary<string, decimal> symbolBias) =>
         suggestion.Score + (symbolBias.TryGetValue(suggestion.Symbol, out var b) ? b : 0m);
+
+    private static bool PassesQualityGate(InvestmentSuggestion suggestion, IReadOnlyDictionary<string, decimal> symbolBias)
+    {
+        var bias = symbolBias.TryGetValue(suggestion.Symbol, out var b) ? b : 0m;
+        var adjusted = suggestion.Score + bias;
+        if (adjusted < MinAdjustedBuyScore)
+        {
+            return false;
+        }
+
+        if (bias < MinSymbolBiasForStandardEntry && suggestion.Score < MinRawScoreWhenBiasNegative)
+        {
+            return false;
+        }
+
+        return true;
+    }
 
     private static bool IsStableStablePair(string symbol)
     {

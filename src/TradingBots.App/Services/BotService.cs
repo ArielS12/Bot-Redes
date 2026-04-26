@@ -411,7 +411,8 @@ public sealed class BotService(
                 }
             }
 
-            if (buySignal && !blockPullbackVolatileDay && !blockPullbackEmaSpread)
+            // Evita promediar al alza involuntariamente: primero se cierra posicion, luego se permite nueva entrada.
+            if (bot.PositionQuantity <= 0m && buySignal && !blockPullbackVolatileDay && !blockPullbackEmaSpread)
             {
                 var symbol = buyCandidate!.Symbol;
                 if (IsSymbolCircuitOpen(symbol))
