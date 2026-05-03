@@ -37,9 +37,38 @@ public sealed class AutoTraderService(
     /// <summary>Tras paradas operativas (supervisor inactividad o rebalanceo fuera del top), no usar el cooldown largo de settings.</summary>
     private static readonly TimeSpan RecycleCooldownAfterOperationalStop = TimeSpan.FromSeconds(90);
 
+    private const int SymbolQuarantineLookbackDays = 7;
+    private const int MinSellsForSymbolQuarantine = 12;
+    private const decimal QuarantineAvgLossToWinRatio = 1.2m;
+
     public async Task<int> CreateBotsFromSuggestionsAsync()
     {
         var now = DateTime.UtcNow;
+        var settings = await settingsService.GetActiveSettingsAsync();
+        var maxAutoBots = Math.Clamp(settings.MaxAutoBots, 0, 50);
+        var quarantine = await BuildSymbolQuarantineSetAsync(now);
+        var existingAutoBots = await dbContext.Bots
+            .Where(x => x.IsAutoManaged)
+            .ToListAsync();
+
+        foreach (var bot in existingAutoBots.Where(x =>
+                     x.State == BotState.Running &&
+                     !x.AutoResumeBlocked &&
+                     x.PositionQuantity <= 0m))
+        {
+            var sym = bot.Symbols.FirstOrDefault() ?? string.Empty;
+            if (quarantine.Contains(sym))
+            {
+                bot.State = BotState.Stopped;
+                bot.LastExecutionError =
+                    "AutoTrader: bot pausado por cuarentena de simbolo (ventas recientes: PnL neto negativo o perdidas medias > 1.2x ganancias medias).";
+                bot.UpdatedAtUtc = now;
+                bot.OutOfTopCycles = 0;
+            }
+        }
+
+        await dbContext.SaveChangesAsync();
+
         var minSuggestionTime = now.AddMinutes(-SuggestionTtlMinutes);
         var suggestions = await advisorService.GetLatestSuggestionsAsync(30);
         var symbolBias = await BuildSymbolBiasMapAsync(now);
@@ -49,30 +78,22 @@ public sealed class AutoTraderService(
             .Select(g => g.OrderByDescending(x => x.CreatedAtUtc).First())
             .Where(x => x.Signal == "BUY" &&
                         PassesQualityGate(x, symbolBias) &&
+                        !quarantine.Contains(x.Symbol) &&
                         !AutopilotSymbolBlocklist.Contains(x.Symbol) &&
                         !IsStableStablePair(x.Symbol) &&
                         (x.Symbol.EndsWith("USDT", StringComparison.Ordinal) || x.Symbol.EndsWith("USDC", StringComparison.Ordinal)))
             .OrderByDescending(x => GetAdjustedScore(x, symbolBias))
             .ToList();
 
-        if (candidates.Count == 0)
+        if (candidates.Count == 0 || maxAutoBots == 0)
         {
             return 0;
         }
 
-        var settings = await settingsService.GetActiveSettingsAsync();
-        var maxAutoBots = Math.Clamp(settings.MaxAutoBots, 0, 50);
-        if (maxAutoBots == 0)
-        {
-            return 0;
-        }
         var minActiveBeforePause = TimeSpan.FromMinutes(Math.Clamp(settings.MinActiveBeforePauseMinutes <= 0 ? 20 : settings.MinActiveBeforePauseMinutes, 10, 90));
         var minStoppedBeforeReactivate = TimeSpan.FromMinutes(Math.Clamp(settings.MinStoppedBeforeReactivateMinutes <= 0 ? 5 : settings.MinStoppedBeforeReactivateMinutes, 2, 30));
         var minStoppedAfterRiskMinutes = Math.Clamp(settings.MinStoppedAfterRiskStopMinutes <= 0 ? 45 : settings.MinStoppedAfterRiskStopMinutes, 15, 240);
         var outOfTopCyclesToPause = Math.Clamp(settings.RebalanceOutOfTopCycles <= 0 ? 4 : settings.RebalanceOutOfTopCycles, 2, 6);
-        var existingAutoBots = await dbContext.Bots
-            .Where(x => x.IsAutoManaged)
-            .ToListAsync();
         var target = candidates
             .Take(maxAutoBots)
             .ToList();
@@ -118,6 +139,11 @@ public sealed class AutoTraderService(
         var createdCount = 0;
         foreach (var candidate in target)
         {
+            if (quarantine.Contains(candidate.Symbol))
+            {
+                continue;
+            }
+
             var alreadyRunning = existingAutoBots.Any(x =>
                 x.State == BotState.Running &&
                 x.Symbols.Contains(candidate.Symbol));
@@ -287,6 +313,52 @@ public sealed class AutoTraderService(
         return map;
     }
 
+    /// <summary>
+    /// Simbolos con ventas SELL recientes de mala calidad: no abrir nuevos AutoPilot ni mantener running sin posicion.
+    /// </summary>
+    private async Task<HashSet<string>> BuildSymbolQuarantineSetAsync(DateTime nowUtc)
+    {
+        var fromUtc = nowUtc.AddDays(-SymbolQuarantineLookbackDays);
+        var rows = await dbContext.Trades
+            .AsNoTracking()
+            .Where(x => x.Side == "SELL" && x.ExecutedAtUtc >= fromUtc)
+            .Select(x => new { x.Symbol, x.RealizedPnlUsdt })
+            .ToListAsync();
+
+        var set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var g in rows.GroupBy(x => x.Symbol, StringComparer.OrdinalIgnoreCase))
+        {
+            if (g.Count() < MinSellsForSymbolQuarantine)
+            {
+                continue;
+            }
+
+            var pnls = g.Select(x => x.RealizedPnlUsdt).ToList();
+            var net = pnls.Sum();
+            var wins = pnls.Where(p => p > 0m).ToList();
+            var losses = pnls.Where(p => p < 0m).ToList();
+
+            var badNet = net < 0m;
+            var heavyAvgLoss = false;
+            if (wins.Count >= 2 && losses.Count >= 2)
+            {
+                var avgWin = wins.Average();
+                var avgLossAbs = Math.Abs(losses.Average());
+                if (avgWin > 0m && avgLossAbs > avgWin * QuarantineAvgLossToWinRatio)
+                {
+                    heavyAvgLoss = true;
+                }
+            }
+
+            if (badNet || heavyAvgLoss)
+            {
+                set.Add(g.Key);
+            }
+        }
+
+        return set;
+    }
+
     private static TimeSpan ResolveRecycleCooldown(TradingBot stoppedBot, TimeSpan configuredReactivate, int minMinutesAfterRiskStop)
     {
         if (IsOperationalRecycleStop(stoppedBot.LastExecutionError))
@@ -348,7 +420,12 @@ public sealed class AutoTraderService(
             return true;
         }
 
-        return lastError.Contains("AutoTrader:", StringComparison.OrdinalIgnoreCase) &&
-               lastError.Contains("rebalanceo", StringComparison.OrdinalIgnoreCase);
+        if (!lastError.Contains("AutoTrader:", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        return lastError.Contains("rebalanceo", StringComparison.OrdinalIgnoreCase) ||
+               lastError.Contains("cuarentena", StringComparison.OrdinalIgnoreCase);
     }
 }
