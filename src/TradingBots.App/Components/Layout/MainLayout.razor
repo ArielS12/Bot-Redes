@@ -1,10 +1,11 @@
 @inherits LayoutComponentBase
 @implements IDisposable
-@inject NavigationManager Nav
+@* @inject NavigationManager Nav *@
+@* Modo publico: sin barra de sesion / login (descomentar para JWT en cliente).
 @inject ClientAuthSession Auth
-@inject UiLoadingState Loading
-
 <AuthLoadTrigger />
+*@
+@inject UiLoadingState Loading
 @if (Loading.IsBusy)
 {
     <div class="tb-global-load-overlay" aria-live="polite" aria-busy="true">
@@ -26,7 +27,7 @@
                 <a class="tb-nav-link" href="/bots">Bots</a>
                 <a class="tb-nav-link" href="/market">Mercado</a>
                 <a class="tb-nav-link" href="/settings">Exchange</a>
-                @if (Auth.IsAuthenticated)
+                @* @if (Auth.IsAuthenticated)
                 {
                     <span class="tb-session-pill ms-md-2">Sesión activa</span>
                     <button type="button" class="btn btn-sm btn-outline-light ms-1" @onclick="SignOut">Salir</button>
@@ -34,7 +35,7 @@
                 else
                 {
                     <a class="btn btn-sm btn-primary ms-md-2" href="/login">Iniciar sesión</a>
-                }
+                } *@
             </nav>
         </div>
     </header>
@@ -48,23 +49,23 @@
 @code {
     protected override void OnInitialized()
     {
-        Auth.SessionChanged += OnAuthChanged;
+        // Auth.SessionChanged += OnAuthChanged; // modo publico
         Loading.Changed += OnLoadingChanged;
     }
 
-    private void OnAuthChanged() => InvokeAsync(StateHasChanged);
+    // private void OnAuthChanged() => InvokeAsync(StateHasChanged);
 
     private void OnLoadingChanged() => InvokeAsync(StateHasChanged);
 
-    private async Task SignOut()
-    {
-        await Auth.SignOutAsync();
-        Nav.NavigateTo("/login");
-    }
+    // private async Task SignOut()
+    // {
+    //     await Auth.SignOutAsync();
+    //     Nav.NavigateTo("/login");
+    // }
 
     public void Dispose()
     {
-        Auth.SessionChanged -= OnAuthChanged;
+        // Auth.SessionChanged -= OnAuthChanged;
         Loading.Changed -= OnLoadingChanged;
     }
 }

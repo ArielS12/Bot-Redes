@@ -2,6 +2,7 @@ using System.Net.Http.Headers;
 using System.Text.Json;
 using Microsoft.JSInterop;
 using TradingBots.App.Models;
+using TradingBots.App;
 
 namespace TradingBots.App.Services;
 
@@ -15,13 +16,22 @@ public sealed class ClientAuthSession(IJSRuntime js)
     /// <summary>True tras el primer intento de leer el token desde el navegador (evita falsos "no autenticado" antes del primer render interactivo).</summary>
     public bool SessionHydrated { get; private set; }
 
-    public bool IsAuthenticated =>
-        !string.IsNullOrEmpty(Token) &&
-        ExpiresAtUtc is { } exp &&
-        exp > DateTime.UtcNow;
+    // Modo publico (PublicAppMode.Enabled): no exigir login en la UI.
+    public bool IsAuthenticated => PublicAppMode.Enabled
+        ? true
+        : (!string.IsNullOrEmpty(Token) &&
+           ExpiresAtUtc is { } exp &&
+           exp > DateTime.UtcNow);
 
     public async Task InitializeFromBrowserAsync()
     {
+        if (PublicAppMode.Enabled)
+        {
+            SessionHydrated = true;
+            SessionChanged?.Invoke();
+            return;
+        }
+
         if (SessionHydrated)
         {
             return;
@@ -79,6 +89,11 @@ public sealed class ClientAuthSession(IJSRuntime js)
 
     public async Task SignOutAsync()
     {
+        if (PublicAppMode.Enabled)
+        {
+            return;
+        }
+
         Token = null;
         ExpiresAtUtc = null;
         await ClearStorageAsync();

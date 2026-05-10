@@ -1,9 +1,10 @@
 using System.Globalization;
-using System.Text;
-using Microsoft.AspNetCore.Authentication.JwtBearer;
+// Modo publico: JWT deshabilitado (descomentar para volver a exigir login en API).
+// using System.Text;
+// using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.IdentityModel.Tokens;
+// using Microsoft.IdentityModel.Tokens;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Infrastructure;
 using TradingBots.App.Data;
 using TradingBots.App.Components;
@@ -56,24 +57,25 @@ builder.Services.AddScoped<IBotSupervisorService, BotSupervisorService>();
 builder.Services.AddScoped<IControlAutotuneService, ControlAutotuneService>();
 builder.Services.AddSingleton<IRuntimeStatusService, RuntimeStatusService>();
 builder.Services.AddHostedService<BotExecutionBackgroundService>();
-var jwtSettings = builder.Configuration.GetSection(JwtSettings.SectionName).Get<JwtSettings>() ?? new JwtSettings();
-var key = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtSettings.SecretKey));
 
-builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
-    .AddJwtBearer(options =>
-    {
-        options.TokenValidationParameters = new TokenValidationParameters
-        {
-            ValidateIssuer = true,
-            ValidateAudience = true,
-            ValidateLifetime = true,
-            ValidateIssuerSigningKey = true,
-            ValidIssuer = jwtSettings.Issuer,
-            ValidAudience = jwtSettings.Audience,
-            IssuerSigningKey = key
-        };
-    });
-builder.Services.AddAuthorization();
+// --- Autenticacion JWT (comentada: app publica, ver PublicAppMode.Enabled) ---
+// var jwtSettings = builder.Configuration.GetSection(JwtSettings.SectionName).Get<JwtSettings>() ?? new JwtSettings();
+// var key = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtSettings.SecretKey));
+// builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
+//     .AddJwtBearer(options =>
+//     {
+//         options.TokenValidationParameters = new TokenValidationParameters
+//         {
+//             ValidateIssuer = true,
+//             ValidateAudience = true,
+//             ValidateLifetime = true,
+//             ValidateIssuerSigningKey = true,
+//             ValidIssuer = jwtSettings.Issuer,
+//             ValidAudience = jwtSettings.Audience,
+//             IssuerSigningKey = key
+//         };
+//     });
+// builder.Services.AddAuthorization();
 
 static string NormalizePostgresConnection(string raw)
 {
@@ -123,8 +125,8 @@ if (app.Environment.IsDevelopment())
 app.UseHttpsRedirection();
 app.UseStaticFiles();
 app.UseAntiforgery();
-app.UseAuthentication();
-app.UseAuthorization();
+// app.UseAuthentication();
+// app.UseAuthorization();
 
 using (var scope = app.Services.CreateScope())
 {
@@ -471,11 +473,12 @@ using (var scope = app.Services.CreateScope())
     }
 }
 
-app.MapPost("/api/auth/login", (LoginRequest request, IAuthService authService) =>
-{
-    var result = authService.Login(request);
-    return result is null ? Results.Unauthorized() : Results.Ok(result);
-});
+// Login API deshabilitado en modo publico (reactivar con JWT arriba).
+// app.MapPost("/api/auth/login", (LoginRequest request, IAuthService authService) =>
+// {
+//     var result = authService.Login(request);
+//     return result is null ? Results.Unauthorized() : Results.Ok(result);
+// });
 
 app.MapGet("/api/bots", async (IBotService botService) => Results.Ok(await botService.GetBotsAsync()));
 

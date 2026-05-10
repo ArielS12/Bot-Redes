@@ -11,12 +11,14 @@
     <h1 class="tb-page-title mb-0">Bots</h1>
     <button class="btn btn-primary" type="button" @onclick="NewBot">Nuevo bot</button>
 </div>
+@* Modo publico: sin aviso de login.
 @if (Auth.SessionHydrated && !Auth.IsAuthenticated)
 {
     <div class="alert alert-secondary border-0 shadow-sm mb-4" role="status">
         <a href="/login">Inicia sesión</a> para ver la lista de bots, métricas y trades, y para crear, editar o controlar operaciones.
     </div>
 }
+*@
 @if (!string.IsNullOrWhiteSpace(_pageMessage))
 {
     <div class="alert @(_pageIsError ? "alert-danger" : "alert-success")" role="alert">

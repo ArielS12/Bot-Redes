@@ -29,12 +29,14 @@
     </div>
 }
 
+@* Modo publico: sin aviso de login.
 @if (!Auth.IsAuthenticated)
 {
     <div class="alert alert-secondary border-0 shadow-sm mb-4" role="status">
         <a href="/login">Inicia sesión</a> para guardar la configuración del exchange, consultar balance y operar en Live.
     </div>
 }
+*@
 
 @if (_form is null)
 {
