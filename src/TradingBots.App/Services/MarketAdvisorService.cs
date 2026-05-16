@@ -71,8 +71,16 @@ public sealed class MarketAdvisorService(
         await dbContext.SaveChangesAsync();
     }
 
-    private static StrategyType DetectStrategy(decimal change24h) =>
-        change24h >= 0m ? StrategyType.Momentum : StrategyType.Pullback;
+    private static StrategyType DetectStrategy(MarketTicker ticker, TechnicalMarketSnapshot t1)
+    {
+        var abs = Math.Abs(ticker.PriceChangePercent24h);
+        if (abs < 0.35m && t1.BbPercent < 0.28m && t1.Rsi14 < 45m)
+        {
+            return StrategyType.MeanReversion;
+        }
+
+        return ticker.PriceChangePercent24h >= 0m ? StrategyType.Momentum : StrategyType.Pullback;
+    }
 
     public async Task<List<InvestmentSuggestion>> GetLatestSuggestionsAsync(int take = 8) =>
         await dbContext.InvestmentSuggestions
@@ -81,7 +89,7 @@ public sealed class MarketAdvisorService(
             .ToListAsync();
 
     private static bool IsTradableQuoteAsset(MarketTicker x) =>
-        x.Symbol.EndsWith("USDT", StringComparison.Ordinal) || x.Symbol.EndsWith("USDC", StringComparison.Ordinal);
+        TradingSymbolFilters.IsTradableVolatilePair(x.Symbol);
 
     private static decimal ScoreFlatMarketPenalty(decimal change24h) =>
         Math.Abs(change24h) < 0.18m ? 0.28m : 0m;
@@ -105,7 +113,7 @@ public sealed class MarketAdvisorService(
             return null;
         }
 
-        var strategy = DetectStrategy(ticker.PriceChangePercent24h);
+        var strategy = DetectStrategy(ticker, t1);
         var trendStrength = ScoreTrend(t1, t5, t15);
         var momentumStrength = ScoreMomentum(t1, ticker.PriceChangePercent24h);
         var liquidityStrength = ScoreLiquidity(ticker.QuoteVolume24h, t1.RelativeVolume);

@@ -8,6 +8,8 @@ public interface IBinanceMarketService
 {
     Task<List<MarketTicker>> GetMarketOverviewAsync(IEnumerable<string> symbols);
     Task<Dictionary<string, TechnicalMarketSnapshot>> GetTechnicalSnapshotsAsync(IEnumerable<string> symbols, string interval = "1m", int limit = 120);
+    Task<IReadOnlyList<KlineBar>> FetchKlinesAsync(string symbol, string interval, int limit, long? startTimeMs = null);
+    Task<IReadOnlyList<KlineBar>> FetchKlinesRangeAsync(string symbol, string interval, DateTime fromUtc, DateTime toUtc, CancellationToken ct = default);
 }
 
 public sealed class BinanceMarketService(
@@ -117,6 +119,7 @@ public sealed class BinanceMarketService(
                 var relativeVolume = CalculateRelativeVolume(quoteVolumes, 20);
                 var atrPercent = CalculateAtrPercent(highs, lows, closes, 14);
                 var volatilityPercent = CalculateVolatilityPercent(closes, 20);
+                var (bbLower, bbMiddle, bbUpper, bbPercent) = TechnicalIndicators.CalculateBollinger(closes);
                 var snapshot = new TechnicalMarketSnapshot
                 {
                     Symbol = symbol,
@@ -131,6 +134,10 @@ public sealed class BinanceMarketService(
                     RelativeVolume = relativeVolume,
                     AtrPercent = atrPercent,
                     VolatilityPercent = volatilityPercent,
+                    BbLower = bbLower,
+                    BbMiddle = bbMiddle,
+                    BbUpper = bbUpper,
+                    BbPercent = bbPercent,
                     Interval = interval
                 };
                 return (symbol, snapshot);
@@ -147,6 +154,124 @@ public sealed class BinanceMarketService(
             .Where(x => x.snapshot is not null)
             .ToDictionary(x => x.symbol, x => x.snapshot!);
     }
+
+    public async Task<IReadOnlyList<KlineBar>> FetchKlinesAsync(string symbol, string interval, int limit, long? startTimeMs = null)
+    {
+        var safeLimit = Math.Clamp(limit, 1, 1000);
+        var settings = await settingsService.GetActiveSettingsAsync();
+        var baseUrl = settingsService.ResolveMarketBaseUrl(settings);
+        var query = $"symbol={symbol.Trim().ToUpperInvariant()}&interval={interval}&limit={safeLimit}";
+        if (startTimeMs is > 0)
+        {
+            query += $"&startTime={startTimeMs.Value}";
+        }
+
+        var endpoint = $"{baseUrl}/api/v3/klines?{query}";
+        try
+        {
+            var response = await GetWithRetryAsync(endpoint);
+            response.EnsureSuccessStatusCode();
+            var payload = await response.Content.ReadAsStringAsync();
+            var raw = JsonSerializer.Deserialize<List<List<JsonElement>>>(payload, JsonOptions) ?? [];
+            return raw
+                .Where(x => x.Count > 7)
+                .Select(ParseKlineBar)
+                .Where(x => x.Close > 0m)
+                .OrderBy(x => x.OpenTimeUtc)
+                .ToList();
+        }
+        catch (Exception ex)
+        {
+            logger.LogDebug(ex, "No se pudieron obtener klines {Symbol} {Interval}", symbol, interval);
+            return [];
+        }
+    }
+
+    public async Task<IReadOnlyList<KlineBar>> FetchKlinesRangeAsync(
+        string symbol,
+        string interval,
+        DateTime fromUtc,
+        DateTime toUtc,
+        CancellationToken ct = default)
+    {
+        var from = DateTime.SpecifyKind(fromUtc, DateTimeKind.Utc);
+        var to = DateTime.SpecifyKind(toUtc, DateTimeKind.Utc);
+        if (to <= from)
+        {
+            return [];
+        }
+
+        var all = new List<KlineBar>();
+        var cursor = from;
+        while (cursor < to)
+        {
+            ct.ThrowIfCancellationRequested();
+            var batch = await FetchKlinesAsync(
+                symbol,
+                interval,
+                1000,
+                new DateTimeOffset(cursor).ToUnixTimeMilliseconds());
+            if (batch.Count == 0)
+            {
+                break;
+            }
+
+            foreach (var bar in batch)
+            {
+                if (bar.OpenTimeUtc >= from && bar.OpenTimeUtc < to)
+                {
+                    all.Add(bar);
+                }
+            }
+
+            var last = batch[^1].OpenTimeUtc;
+            var next = last.AddMinutes(ResolveIntervalMinutes(interval));
+            if (next <= cursor)
+            {
+                break;
+            }
+
+            cursor = next;
+            if (batch.Count < 1000)
+            {
+                break;
+            }
+        }
+
+        return all
+            .GroupBy(x => x.OpenTimeUtc)
+            .Select(g => g.First())
+            .OrderBy(x => x.OpenTimeUtc)
+            .ToList();
+    }
+
+    private static int ResolveIntervalMinutes(string interval) => interval switch
+    {
+        "1m" => 1,
+        "5m" => 5,
+        "15m" => 15,
+        "1h" => 60,
+        "4h" => 240,
+        "1d" => 1440,
+        _ => 1
+    };
+
+    private static KlineBar ParseKlineBar(List<JsonElement> row)
+    {
+        var openMs = row[0].GetInt64();
+        return new KlineBar
+        {
+            OpenTimeUtc = DateTimeOffset.FromUnixTimeMilliseconds(openMs).UtcDateTime,
+            Open = ParseDecimal(row[1]),
+            High = ParseDecimal(row[2]),
+            Low = ParseDecimal(row[3]),
+            Close = ParseDecimal(row[4]),
+            QuoteVolume = ParseDecimal(row[7])
+        };
+    }
+
+    private static decimal ParseDecimal(JsonElement element) =>
+        decimal.TryParse(element.GetString(), NumberStyles.Any, CultureInfo.InvariantCulture, out var v) ? v : 0m;
 
     private static decimal CalculateEma(IReadOnlyList<decimal> values, int period)
     {

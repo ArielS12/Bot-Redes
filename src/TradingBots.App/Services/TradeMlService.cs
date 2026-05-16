@@ -268,7 +268,7 @@ public sealed class TradeMlService(AppDbContext dbContext) : ITradeMlService
         (double)decimal.Clamp(snapshot.MacdHistogram * 25m, -1m, 1m),
         (double)decimal.Clamp((snapshot.RelativeVolume - 1m) / 2m, -1m, 1m),
         (double)decimal.Clamp(ticker.PriceChangePercent24h / 20m, -1m, 1m),
-        strategy == StrategyType.Momentum ? 1d : 0d
+        strategy == StrategyType.Momentum ? 1d : strategy == StrategyType.MeanReversion ? -1d : 0d
     ];
 
     private static double[] BuildFeaturesFromObservation(MlTradeObservation row) =>
@@ -279,7 +279,7 @@ public sealed class TradeMlService(AppDbContext dbContext) : ITradeMlService
         (double)decimal.Clamp(row.MacdHistogram * 25m, -1m, 1m),
         (double)decimal.Clamp((row.RelativeVolume - 1m) / 2m, -1m, 1m),
         (double)decimal.Clamp(row.PriceChangePercent24h / 20m, -1m, 1m),
-        row.StrategyType == StrategyType.Momentum ? 1d : 0d
+        row.StrategyType == StrategyType.Momentum ? 1d : row.StrategyType == StrategyType.MeanReversion ? -1d : 0d
     ];
 
     private static decimal NormEmaGapPct(TechnicalMarketSnapshot snapshot)

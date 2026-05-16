@@ -14,7 +14,7 @@ public sealed class ClientAuthSession(IJSRuntime js)
     public event Action? SessionChanged;
 
     /// <summary>True tras el primer intento de leer el token desde el navegador (evita falsos "no autenticado" antes del primer render interactivo).</summary>
-    public bool SessionHydrated { get; private set; }
+    public bool SessionHydrated { get; private set; } = PublicAppMode.Enabled;
 
     // Modo publico (PublicAppMode.Enabled): no exigir login en la UI.
     public bool IsAuthenticated => PublicAppMode.Enabled

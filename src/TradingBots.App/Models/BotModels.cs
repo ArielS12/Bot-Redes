@@ -23,7 +23,8 @@ public enum BotState
 public enum StrategyType
 {
     Momentum = 0,
-    Pullback = 1
+    Pullback = 1,
+    MeanReversion = 2
 }
 
 public sealed class TradingBot
@@ -128,7 +129,23 @@ public sealed class TechnicalMarketSnapshot
     public decimal RelativeVolume { get; set; }
     public decimal AtrPercent { get; set; }
     public decimal VolatilityPercent { get; set; }
+    public decimal BbLower { get; set; }
+    public decimal BbMiddle { get; set; }
+    public decimal BbUpper { get; set; }
+    public decimal BbPercent { get; set; }
     public string Interval { get; set; } = "1m";
+}
+
+public sealed class BotRegimeStatusItem
+{
+    public Guid BotId { get; set; }
+    public string BotName { get; set; } = string.Empty;
+    public string Symbol { get; set; } = string.Empty;
+    public bool HasRegimeData { get; set; }
+    public decimal PricePercentile90d { get; set; }
+    public bool DailyTrendUp { get; set; }
+    public decimal DailyAtrPercentile { get; set; }
+    public string RegimeSummary { get; set; } = string.Empty;
 }
 
 public sealed class DashboardSummary
@@ -228,7 +245,7 @@ public sealed class BinanceConnectionSettings
     public bool LiveSafetyConfirmed { get; set; }
     public bool LiveEnabledByChecklist { get; set; }
     public bool GlobalKillSwitch { get; set; } = true;
-    public int MaxAutoBots { get; set; } = 10;
+    public int MaxAutoBots { get; set; } = 8;
     public bool AutoControlTuningEnabled { get; set; } = true;
     public int SupervisorInactiveMinutes { get; set; } = 180;
     public int RebalanceOutOfTopCycles { get; set; } = 3;
@@ -256,7 +273,7 @@ public sealed class UpdateBinanceSettingsRequest
     public bool LiveSafetyConfirmed { get; set; }
     public bool LiveEnabledByChecklist { get; set; }
     public bool GlobalKillSwitch { get; set; } = true;
-    public int MaxAutoBots { get; set; } = 10;
+    public int MaxAutoBots { get; set; } = 8;
     public bool AutoControlTuningEnabled { get; set; } = true;
     public int SupervisorInactiveMinutes { get; set; } = 180;
     public int RebalanceOutOfTopCycles { get; set; } = 3;

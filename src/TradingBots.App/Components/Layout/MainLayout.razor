@@ -1,10 +1,10 @@
 @inherits LayoutComponentBase
 @implements IDisposable
 @* @inject NavigationManager Nav *@
-@* Modo publico: sin barra de sesion / login (descomentar para JWT en cliente).
+@* Modo publico: sin barra de sesion / login (descomentar bloque Auth en nav para JWT).
 @inject ClientAuthSession Auth
-<AuthLoadTrigger />
 *@
+<AuthLoadTrigger />
 @inject UiLoadingState Loading
 @if (Loading.IsBusy)
 {
@@ -26,6 +26,7 @@
                 <a class="tb-nav-link" href="/">Dashboard</a>
                 <a class="tb-nav-link" href="/bots">Bots</a>
                 <a class="tb-nav-link" href="/market">Mercado</a>
+                <a class="tb-nav-link" href="/backtest">Backtest</a>
                 <a class="tb-nav-link" href="/settings">Exchange</a>
                 @* @if (Auth.IsAuthenticated)
                 {

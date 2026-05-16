@@ -1,0 +1,222 @@
+@page "/backtest"
+@inject IHttpClientFactory HttpFactory
+@inject NavigationManager Nav
+@inject ClientAuthSession Auth
+@inject UiLoadingState Loading
+@using TradingBots.App.Models
+
+<PageTitle>Backtest</PageTitle>
+<h1 class="tb-page-title">Backtest de estrategia</h1>
+<p class="text-muted">Simula entradas/salidas en velas 1m historicas (Binance) con las mismas reglas que el motor en vivo.</p>
+
+<div class="card mb-4 border-secondary">
+    <div class="card-body">
+        <div class="row g-2 align-items-end">
+            <div class="col-md-3">
+                <label class="form-label">Par</label>
+                <input class="form-control" @bind="_symbol" />
+            </div>
+            <div class="col-md-2">
+                <label class="form-label">Estrategia</label>
+                <select class="form-select" @bind="_strategy">
+                    <option value="@StrategyType.Momentum">Momentum</option>
+                    <option value="@StrategyType.Pullback">Pullback</option>
+                    <option value="@StrategyType.MeanReversion">MeanReversion</option>
+                </select>
+            </div>
+            <div class="col-md-2">
+                <label class="form-label">Desde (UTC)</label>
+                <input class="form-control" type="date" @bind="_from" />
+            </div>
+            <div class="col-md-2">
+                <label class="form-label">Hasta (UTC)</label>
+                <input class="form-control" type="date" @bind="_to" />
+            </div>
+            <div class="col-md-2">
+                <label class="form-label">USDT / trade</label>
+                <input class="form-control" type="number" step="1" @bind="_quote" />
+            </div>
+            <div class="col-md-1">
+                <button class="btn btn-primary w-100" disabled="@_running" @onclick="RunBacktest">
+                    @(_running ? "..." : "Ejecutar")
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
+@if (!string.IsNullOrWhiteSpace(_error))
+{
+    <div class="alert alert-danger">@_error</div>
+}
+
+@if (_result is not null)
+{
+    <div class="row g-3 mb-4">
+        <div class="col-md-2">
+            <div class="card">
+                <div class="card-body">
+                    <h6>Cierres</h6>
+                    <h4>@_result.ClosedTrades</h4>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-2">
+            <div class="card">
+                <div class="card-body">
+                    <h6>Win rate</h6>
+                    <h4>@_result.WinRatePercent.ToString("0.0")%</h4>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-2">
+            <div class="card">
+                <div class="card-body">
+                    <h6>PnL neto</h6>
+                    <h4 class="@PnlClass(_result.NetPnlUsdt)">@_result.NetPnlUsdt.ToString("0.00")</h4>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-2">
+            <div class="card">
+                <div class="card-body">
+                    <h6>Profit factor</h6>
+                    <h4>@_result.ProfitFactor.ToString("0.00")</h4>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-2">
+            <div class="card">
+                <div class="card-body">
+                    <h6>Max DD</h6>
+                    <h4 class="text-danger">@_result.MaxDrawdownUsdt.ToString("0.00")</h4>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-2">
+            <div class="card">
+                <div class="card-body">
+                    <h6>Semaforo</h6>
+                    <h4><span class="badge @TierClass(_result.CohortTier)">@_result.CohortTier</span></h4>
+                    <small>@_result.CohortReason</small>
+                </div>
+            </div>
+        </div>
+    </div>
+    @if (_result.Trades.Count > 0)
+    {
+        <div class="table-responsive">
+            <table class="table table-sm table-striped">
+                <thead>
+                    <tr><th>Entrada</th><th>Salida</th><th>PnL</th><th>Motivo</th></tr>
+                </thead>
+                <tbody>
+                    @foreach (var t in _result.Trades.Take(50))
+                    {
+                        <tr>
+                            <td>@t.EntryUtc.ToString("yyyy-MM-dd HH:mm")</td>
+                            <td>@t.ExitUtc.ToString("yyyy-MM-dd HH:mm")</td>
+                            <td class="@PnlClass(t.RealizedPnlUsdt)">@t.RealizedPnlUsdt.ToString("0.00")</td>
+                            <td>@t.ExitReason</td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    }
+}
+
+<div class="card border-warning">
+    <div class="card-header">Mantenimiento de flota</div>
+    <div class="card-body">
+        <p class="small text-muted">Detiene bots auto sin trades en 14+ dias y limita bots en ejecucion al maximo configurado (8).</p>
+        <button class="btn btn-outline-warning" disabled="@_maintRunning" @onclick="RunMaintenance">Consolidar bots</button>
+        @if (!string.IsNullOrWhiteSpace(_maintMessage))
+        {
+            <div class="alert alert-info mt-2 mb-0">@_maintMessage</div>
+        }
+    </div>
+</div>
+
+@code {
+    private string _symbol = "BTCUSDT";
+    private StrategyType _strategy = StrategyType.Momentum;
+    private DateTime _from = DateTime.UtcNow.Date.AddDays(-14);
+    private DateTime _to = DateTime.UtcNow.Date;
+    private decimal _quote = 20m;
+    private bool _running;
+    private bool _maintRunning;
+    private string _error = string.Empty;
+    private string _maintMessage = string.Empty;
+    private BacktestResult? _result;
+
+    protected override async Task OnInitializedAsync() => await Auth.InitializeFromBrowserAsync();
+
+    private async Task RunBacktest()
+    {
+        _running = true;
+        _error = string.Empty;
+        Loading.Begin();
+        try
+        {
+            var client = HttpFactory.CreateClient();
+            client.BaseAddress = new Uri(Nav.BaseUri);
+            var req = new BacktestRequest
+            {
+                Symbol = _symbol,
+                Strategy = _strategy,
+                FromUtc = _from,
+                ToUtc = _to.AddDays(1),
+                QuotePerTradeUsdt = _quote
+            };
+            using var response = await client.PostAsJsonAsync("/api/backtest/run", req);
+            if (!response.IsSuccessStatusCode)
+            {
+                _error = await response.Content.ReadAsStringAsync();
+                _result = null;
+                return;
+            }
+
+            _result = await response.Content.ReadFromJsonAsync<BacktestResult>();
+        }
+        catch (Exception ex)
+        {
+            _error = ex.Message;
+        }
+        finally
+        {
+            _running = false;
+            Loading.End();
+        }
+    }
+
+    private async Task RunMaintenance()
+    {
+        _maintRunning = true;
+        _maintMessage = string.Empty;
+        try
+        {
+            var client = HttpFactory.CreateClient();
+            client.BaseAddress = new Uri(Nav.BaseUri);
+            using var response = await client.PostAsync("/api/bots/maintenance/consolidate", null);
+            var body = await response.Content.ReadFromJsonAsync<BotMaintenanceResult>();
+            _maintMessage = body?.Message ?? "Sin respuesta.";
+        }
+        catch (Exception ex)
+        {
+            _maintMessage = ex.Message;
+        }
+        finally
+        {
+            _maintRunning = false;
+        }
+    }
+
+    private static string PnlClass(decimal v) => v >= 0 ? "text-success" : "text-danger";
+    private static string TierClass(string tier) => tier switch
+    {
+        "VERDE" => "bg-success",
+        "AMARILLO" => "bg-warning text-dark",
+        _ => "bg-danger"
+    };
+}

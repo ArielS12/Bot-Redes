@@ -2,6 +2,7 @@ using Microsoft.EntityFrameworkCore;
 using System.Collections.Concurrent;
 using TradingBots.App.Data;
 using TradingBots.App.Models;
+using TradingBots.App.Services.Strategies;
 
 namespace TradingBots.App.Services;
 
@@ -25,24 +26,14 @@ public sealed class BotService(
     IBinanceTradeExecutionService tradeExecutionService,
     IBinanceSettingsService settingsService,
     ITradeMlService tradeMlService,
+    IStrategySignalRegistry strategySignals,
+    IMarketHistoryService marketHistory,
     ILogger<BotService> logger) : IBotService
 {
     /// <summary>Mínimo de notional por orden de compra (coherente con filtros típicos MIN_NOTIONAL en Binance).</summary>
     private const decimal MinQuoteOrderUsdt = 10m;
     private const decimal MinQuoteVolume24hUsdt = 750_000m;
     private const decimal MinRelativeVolume = 0.6m;
-    /// <summary>Pullback: no entrar si el dia ya se movio demasiado (evita perseguir extremos).</summary>
-    private const decimal PullbackMaxAbsChange24hPercent = 12m;
-    /// <summary>Pullback: separacion EMA maxima para evitar entradas en contra con tendencia estirada.</summary>
-    private const decimal PullbackMaxEmaSpreadPercentOfPrice = 2.5m;
-    /// <summary>Momentum: evita entrar cuando el spread EMA indica sobreextension (chasing).</summary>
-    private const decimal MomentumMaxEmaSpreadPercentOfPrice = 1.0m;
-    /// <summary>Momentum: si el dia ya va muy extendido y RSI esta alto, espera mejor entrada.</summary>
-    private const decimal MomentumMaxAbsChange24hPercentForEntry = 9m;
-    private const decimal MomentumMaxRsiOnStrongDailyMove = 64m;
-    private const decimal MaxAtrPercentForEntry = 2.8m;
-    private const decimal MaxVolatilityPercentForEntry = 1.4m;
-    private const decimal MinTrendSpreadPercentForEntry = 0.03m;
     private const decimal BaseRiskPercentPerTrade = 0.50m;
     private const int ExecutionFailureCircuitThreshold = 3;
     private static readonly TimeSpan ExecutionFailureCircuitDuration = TimeSpan.FromMinutes(20);
@@ -306,11 +297,13 @@ public sealed class BotService(
             .ToListAsync();
         var realTradingEnabled = await tradeExecutionService.IsRealTradingEnabledAsync();
         var symbols = bots.SelectMany(x => x.Symbols).Distinct().ToList();
-        var technicalBySymbol = await marketService.GetTechnicalSnapshotsAsync(symbols, "1m", 150);
-        var technical5mBySymbol = await marketService.GetTechnicalSnapshotsAsync(symbols, "5m", 150);
-        var technical15mBySymbol = await marketService.GetTechnicalSnapshotsAsync(symbols, "15m", 150);
+        var technicalBySymbol = await marketService.GetTechnicalSnapshotsAsync(symbols, "1m", 200);
+        var technical5mBySymbol = await marketService.GetTechnicalSnapshotsAsync(symbols, "5m", 200);
+        var technical15mBySymbol = await marketService.GetTechnicalSnapshotsAsync(symbols, "15m", 200);
+        var regimeBySymbol = await marketHistory.GetRegimesAsync(symbols);
         foreach (var bot in bots)
         {
+            var signals = strategySignals.Get(bot.StrategyType);
             var selected = bot.Symbols
                 .Where(marketSnapshot.ContainsKey)
                 .Select(symbol => new { Symbol = symbol, Ticker = marketSnapshot[symbol] })
@@ -367,16 +360,18 @@ public sealed class BotService(
                         return false;
                     }
 
-                    return ShouldBuy(bot.StrategyType, x.Snapshot) &&
-                           PassesMultiTimeframeTrend(bot.StrategyType, tf5, tf15) &&
+                    regimeBySymbol.TryGetValue(x.Symbol, out var regime);
+                    return signals.ShouldBuy(x.Snapshot) &&
+                           signals.PassesMultiTimeframeTrend(tf5, tf15) &&
                            PassesLiquidityAndVolume(marketSnapshot[x.Symbol], x.Snapshot) &&
-                           PassesRegimeFilter(bot.StrategyType, x.Snapshot, marketSnapshot[x.Symbol]);
+                           signals.PassesShortRegimeFilter(x.Snapshot, marketSnapshot[x.Symbol]) &&
+                           signals.PassesLongTermRegime(regime);
                 })
-                .OrderByDescending(x => ScoreBuyCandidate(bot.StrategyType, x.Snapshot))
+                .OrderByDescending(x => signals.ScoreBuyCandidate(x.Snapshot))
                 .FirstOrDefault();
             var buySignal = buyCandidate is not null;
             var activeTechnical = technicalBySymbol.TryGetValue(activeSymbol, out var t) ? t : null;
-            var sellSignal = activeTechnical is not null && ShouldSellBySignal(bot.StrategyType, activeTechnical);
+            var sellSignal = activeTechnical is not null && signals.ShouldSell(activeTechnical);
             var takeProfitHit = bot.PositionQuantity > 0 && bot.AverageEntryPrice > 0 &&
                                 ((activePrice - bot.AverageEntryPrice) / bot.AverageEntryPrice) * 100m >= bot.TakeProfitPercent;
             var stopLossHit = bot.PositionQuantity > 0 && bot.AverageEntryPrice > 0 &&
@@ -402,12 +397,12 @@ public sealed class BotService(
             {
                 var buyTicker = marketSnapshot[buyCandidate.Symbol];
                 var abs24 = Math.Abs(buyTicker.PriceChangePercent24h);
-                blockPullbackVolatileDay = abs24 >= PullbackMaxAbsChange24hPercent;
+                blockPullbackVolatileDay = abs24 >= StrategySignalConstants.PullbackMaxAbsChange24hPercent;
                 var buySnap = buyCandidate.Snapshot;
                 if (buySnap.LastPrice > 0m)
                 {
                     var emaSpreadPct = Math.Abs(buySnap.EmaFast - buySnap.EmaSlow) / buySnap.LastPrice * 100m;
-                    blockPullbackEmaSpread = emaSpreadPct > PullbackMaxEmaSpreadPercentOfPrice;
+                    blockPullbackEmaSpread = emaSpreadPct > StrategySignalConstants.PullbackMaxEmaSpreadPercentOfPrice;
                 }
             }
 
@@ -768,13 +763,15 @@ public sealed class BotService(
         var allSymbols = bots.SelectMany(x => x.Symbols).Distinct().ToList();
         var market = await marketService.GetMarketOverviewAsync(allSymbols);
         var marketSnapshot = market.ToDictionary(x => x.Symbol, x => x);
-        var technicalBySymbol = await marketService.GetTechnicalSnapshotsAsync(allSymbols, "1m", 150);
-        var technical5mBySymbol = await marketService.GetTechnicalSnapshotsAsync(allSymbols, "5m", 150);
-        var technical15mBySymbol = await marketService.GetTechnicalSnapshotsAsync(allSymbols, "15m", 150);
+        var technicalBySymbol = await marketService.GetTechnicalSnapshotsAsync(allSymbols, "1m", 200);
+        var technical5mBySymbol = await marketService.GetTechnicalSnapshotsAsync(allSymbols, "5m", 200);
+        var technical15mBySymbol = await marketService.GetTechnicalSnapshotsAsync(allSymbols, "15m", 200);
+        var regimeBySymbol = await marketHistory.GetRegimesAsync(allSymbols);
         var result = new List<BotSignalDiagnosticsItem>();
 
         foreach (var bot in bots)
         {
+            var signals = strategySignals.Get(bot.StrategyType);
             var selected = bot.Symbols
                 .Where(marketSnapshot.ContainsKey)
                 .Where(technicalBySymbol.ContainsKey)
@@ -803,7 +800,7 @@ public sealed class BotService(
             var exposureLimit = bot.BudgetUsdt * (Math.Clamp(bot.MaxExposurePercent, 1m, 100m) / 100m);
             var remainingBudget = Math.Max(0m, exposureLimit - investedCapital);
             var profitableNow = bot.PositionQuantity > 0m && bot.AverageEntryPrice > 0m && activePrice > bot.AverageEntryPrice;
-            var sellSignal = ShouldSellBySignal(bot.StrategyType, activeTechnical);
+            var sellSignal = signals.ShouldSell(activeTechnical);
             var takeProfitHit = bot.PositionQuantity > 0m && bot.AverageEntryPrice > 0m &&
                                 ((activePrice - bot.AverageEntryPrice) / bot.AverageEntryPrice) * 100m >= bot.TakeProfitPercent;
             var stopLossHit = bot.PositionQuantity > 0m && bot.AverageEntryPrice > 0m &&
@@ -822,11 +819,12 @@ public sealed class BotService(
                 .Where(x =>
                     technical5mBySymbol.TryGetValue(x.Symbol, out var tf5) &&
                     technical15mBySymbol.TryGetValue(x.Symbol, out var tf15) &&
-                    ShouldBuy(bot.StrategyType, x.Snapshot) &&
-                    PassesMultiTimeframeTrend(bot.StrategyType, tf5, tf15) &&
+                    signals.ShouldBuy(x.Snapshot) &&
+                    signals.PassesMultiTimeframeTrend(tf5, tf15) &&
                     PassesLiquidityAndVolume(marketSnapshot[x.Symbol], x.Snapshot) &&
-                    PassesRegimeFilter(bot.StrategyType, x.Snapshot, marketSnapshot[x.Symbol]))
-                .OrderByDescending(x => ScoreBuyCandidate(bot.StrategyType, x.Snapshot))
+                    signals.PassesShortRegimeFilter(x.Snapshot, marketSnapshot[x.Symbol]) &&
+                    signals.PassesLongTermRegime(regimeBySymbol.GetValueOrDefault(x.Symbol)))
+                .OrderByDescending(x => signals.ScoreBuyCandidate(x.Snapshot))
                 .FirstOrDefault();
 
             var label = "ESPERANDO";
@@ -845,12 +843,12 @@ public sealed class BotService(
                     if (bot.StrategyType == StrategyType.Pullback)
                     {
                         var abs24 = Math.Abs(marketSnapshot[buyCandidate.Symbol].PriceChangePercent24h);
-                        blockPullbackVolatileDay = abs24 >= PullbackMaxAbsChange24hPercent;
+                        blockPullbackVolatileDay = abs24 >= StrategySignalConstants.PullbackMaxAbsChange24hPercent;
                         var buySnapDiag = buyCandidate.Snapshot;
                         if (buySnapDiag.LastPrice > 0m)
                         {
                             var emaSpreadPct = Math.Abs(buySnapDiag.EmaFast - buySnapDiag.EmaSlow) / buySnapDiag.LastPrice * 100m;
-                            blockPullbackEmaSpread = emaSpreadPct > PullbackMaxEmaSpreadPercentOfPrice;
+                            blockPullbackEmaSpread = emaSpreadPct > StrategySignalConstants.PullbackMaxEmaSpreadPercentOfPrice;
                         }
                     }
 
@@ -859,7 +857,7 @@ public sealed class BotService(
                     {
                         label = "ESPERANDO";
                         reason = blockPullbackVolatileDay
-                            ? $"Pullback: |Δ24h| >= {PullbackMaxAbsChange24hPercent}% en {buyCandidate.Symbol} (filtro anti-extremo diario)."
+                            ? $"Pullback: |Δ24h| >= {StrategySignalConstants.PullbackMaxAbsChange24hPercent}% en {buyCandidate.Symbol} (filtro anti-extremo diario)."
                             : $"Pullback: separacion EMA 1m demasiado alta en {buyCandidate.Symbol} (proxy spread/tendencia).";
                     }
                     else if (quoteCandidate >= MinQuoteOrderUsdt)
@@ -892,17 +890,19 @@ public sealed class BotService(
                     {
                         reason = "Sin datos 5m/15m para confirmacion multi-timeframe.";
                     }
-                    else if (!ShouldBuy(bot.StrategyType, activeTechnical))
+                    else if (!signals.ShouldBuy(activeTechnical))
                     {
-                        reason = DescribeBuySignalGap(bot.StrategyType, activeTechnical);
+                        reason = signals.DescribeBuySignalGap(activeTechnical);
                     }
-                    else if (!PassesMultiTimeframeTrend(bot.StrategyType, tf5, tf15))
+                    else if (!signals.PassesMultiTimeframeTrend(tf5, tf15))
                     {
                         reason = "Bloqueado por confirmacion multi-timeframe (5m/15m).";
                     }
                     else
                     {
-                        var regimeMsg = DescribeRegimeFailureIfAny(bot.StrategyType, activeTechnical, m);
+                        regimeBySymbol.TryGetValue(activeSymbol, out var longRegime);
+                        var regimeMsg = signals.DescribeShortRegimeFailure(activeTechnical, m)
+                            ?? signals.DescribeLongTermRegimeFailure(longRegime);
                         reason = regimeMsg
                             ?? "Ningun simbolo del bot cumple todos los filtros a la vez (revisa otros pares en la lista).";
                     }
@@ -941,151 +941,8 @@ public sealed class BotService(
         return result;
     }
 
-    private static bool MomentumMacdHistogramEntryOk(TechnicalMarketSnapshot technical) =>
-        (technical.PreviousMacdHistogram <= 0m && technical.MacdHistogram > 0m) ||
-        (technical.MacdHistogram > 0m && technical.MacdHistogram > technical.PreviousMacdHistogram);
-
-    private static bool ShouldBuy(StrategyType strategy, TechnicalMarketSnapshot technical) =>
-        strategy == StrategyType.Momentum
-            ? technical.EmaFast > technical.EmaSlow &&
-              technical.MacdLine > technical.MacdSignal &&
-              MomentumMacdHistogramEntryOk(technical) &&
-              technical.Rsi14 >= 50m &&
-              technical.Rsi14 <= 68m
-            : technical.EmaFast >= technical.EmaSlow &&
-              technical.Rsi14 <= 38m &&
-              technical.MacdHistogram > technical.PreviousMacdHistogram;
-
-    private static string DescribeBuySignalGap(StrategyType strategy, TechnicalMarketSnapshot t)
-    {
-        if (strategy == StrategyType.Momentum)
-        {
-            if (t.EmaFast <= t.EmaSlow)
-            {
-                return "Momentum 1m: EMA rapida no por encima de la lenta.";
-            }
-
-            if (t.MacdLine <= t.MacdSignal)
-            {
-                return "Momentum 1m: linea MACD no por encima de la senal.";
-            }
-
-            if (!MomentumMacdHistogramEntryOk(t))
-            {
-                return "Momentum 1m: histograma MACD sin impulso (cruce por cero o expansion positiva).";
-            }
-
-            if (t.Rsi14 < 50m)
-            {
-                return $"Momentum 1m: RSI {t.Rsi14:0.#} bajo minimo de entrada (50).";
-            }
-
-            if (t.Rsi14 > 68m)
-            {
-                return $"Momentum 1m: RSI {t.Rsi14:0.#} sobre maximo de entrada (68).";
-            }
-        }
-        else
-        {
-            if (t.EmaFast < t.EmaSlow)
-            {
-                return "Pullback 1m: EMA rapida debajo de la lenta.";
-            }
-
-            if (t.Rsi14 > 38m)
-            {
-                return $"Pullback 1m: RSI {t.Rsi14:0.#} no en sobreventa (max 38).";
-            }
-
-            if (t.MacdHistogram <= t.PreviousMacdHistogram)
-            {
-                return "Pullback 1m: histograma MACD sin expansion vs vela anterior.";
-            }
-        }
-
-        return "Condicion de entrada 1m no cumplida.";
-    }
-
-    private static string? DescribeRegimeFailureIfAny(StrategyType strategy, TechnicalMarketSnapshot technical, MarketTicker ticker)
-    {
-        if (technical.LastPrice <= 0m)
-        {
-            return "Regimen: precio invalido en snapshot 1m.";
-        }
-
-        var emaSpreadPct = Math.Abs(technical.EmaFast - technical.EmaSlow) / technical.LastPrice * 100m;
-        if (strategy == StrategyType.Momentum)
-        {
-            if (emaSpreadPct < MinTrendSpreadPercentForEntry)
-            {
-                return $"Regimen: tendencia 1m debil (spread EMA {emaSpreadPct:0.###}% < min {MinTrendSpreadPercentForEntry}%).";
-            }
-
-            if (emaSpreadPct > MomentumMaxEmaSpreadPercentOfPrice)
-            {
-                return $"Regimen: spread EMA amplio anti-chase ({emaSpreadPct:0.###}% > {MomentumMaxEmaSpreadPercentOfPrice}%).";
-            }
-        }
-        else if (emaSpreadPct > PullbackMaxEmaSpreadPercentOfPrice)
-        {
-            return $"Regimen: separacion EMA 1m alta ({emaSpreadPct:0.###}% > {PullbackMaxEmaSpreadPercentOfPrice}%).";
-        }
-
-        var volatilityOk = technical.VolatilityPercent <= MaxVolatilityPercentForEntry ||
-                           technical.AtrPercent <= MaxAtrPercentForEntry;
-        if (!volatilityOk)
-        {
-            return $"Regimen: volatilidad/ATR 1m altos (vol%={technical.VolatilityPercent:0.##}, ATR%={technical.AtrPercent:0.##}).";
-        }
-
-        if (strategy == StrategyType.Momentum &&
-            !(Math.Abs(ticker.PriceChangePercent24h) < MomentumMaxAbsChange24hPercentForEntry ||
-              technical.Rsi14 <= MomentumMaxRsiOnStrongDailyMove))
-        {
-            return $"Regimen: dia extendido (|24h|={Math.Abs(ticker.PriceChangePercent24h):0.##}%) con RSI {technical.Rsi14:0.#} > {MomentumMaxRsiOnStrongDailyMove} (anti-chase).";
-        }
-
-        return null;
-    }
-
-    private static bool ShouldSellBySignal(StrategyType strategy, TechnicalMarketSnapshot technical) =>
-        strategy == StrategyType.Momentum
-            ? technical.EmaFast < technical.EmaSlow ||
-              technical.MacdLine < technical.MacdSignal ||
-              technical.Rsi14 >= 78m
-            : technical.Rsi14 >= 58m ||
-              technical.MacdLine < technical.MacdSignal;
-
-    private static decimal ScoreBuyCandidate(StrategyType strategy, TechnicalMarketSnapshot technical) =>
-        strategy == StrategyType.Momentum
-            ? (technical.MacdHistogram * 1000m) + (technical.EmaFast - technical.EmaSlow) + technical.Rsi14 + (technical.RelativeVolume * 5m)
-            : (50m - technical.Rsi14) + (technical.MacdHistogram - technical.PreviousMacdHistogram) * 1000m + (technical.RelativeVolume * 5m);
-
     private static bool PassesLiquidityAndVolume(MarketTicker ticker, TechnicalMarketSnapshot technical) =>
         ticker.QuoteVolume24h >= MinQuoteVolume24hUsdt && technical.RelativeVolume >= MinRelativeVolume;
-
-    private static bool PassesRegimeFilter(StrategyType strategy, TechnicalMarketSnapshot technical, MarketTicker ticker)
-    {
-        if (technical.LastPrice <= 0m)
-        {
-            return false;
-        }
-
-        var emaSpreadPct = Math.Abs(technical.EmaFast - technical.EmaSlow) / technical.LastPrice * 100m;
-        var trendOk = strategy == StrategyType.Momentum
-            ? emaSpreadPct >= MinTrendSpreadPercentForEntry && emaSpreadPct <= MomentumMaxEmaSpreadPercentOfPrice
-            : emaSpreadPct <= PullbackMaxEmaSpreadPercentOfPrice;
-        var volatilityOk = technical.VolatilityPercent <= MaxVolatilityPercentForEntry || technical.AtrPercent <= MaxAtrPercentForEntry;
-        var antiChaseOk = strategy != StrategyType.Momentum ||
-                          Math.Abs(ticker.PriceChangePercent24h) < MomentumMaxAbsChange24hPercentForEntry ||
-                          technical.Rsi14 <= MomentumMaxRsiOnStrongDailyMove;
-        return trendOk && volatilityOk && antiChaseOk;
-    }
-
-    private static bool PassesMultiTimeframeTrend(StrategyType strategy, TechnicalMarketSnapshot tf5, TechnicalMarketSnapshot tf15) =>
-        strategy == StrategyType.Momentum
-            ? tf5.EmaFast > tf5.EmaSlow && tf15.EmaFast > tf15.EmaSlow && tf15.MacdLine >= (tf15.MacdSignal - 0.0005m)
-            : tf15.EmaFast >= tf15.EmaSlow && tf5.Rsi14 <= 55m;
 
     private static string BuildExitState(TradingBot bot, bool tp1Ready, bool tp2Ready, bool trailingArmed, bool timeStopHit, bool sellSignal)
     {

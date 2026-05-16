@@ -14,11 +14,6 @@ public sealed class AutoTraderService(
     IMarketAdvisorService advisorService,
     IBinanceSettingsService settingsService) : IAutoTraderService
 {
-    private static readonly HashSet<string> StableAssets = new(StringComparer.Ordinal)
-    {
-        "USDT", "USDC", "FDUSD", "USD1", "BUSD", "TUSD", "USDP", "DAI"
-    };
-
     /// <summary>Pares con historial de churn / micro-edge que no aportan a AutoPilot.</summary>
     private static readonly HashSet<string> AutopilotSymbolBlocklist = new(StringComparer.Ordinal)
     {
@@ -80,8 +75,7 @@ public sealed class AutoTraderService(
                         PassesQualityGate(x, symbolBias) &&
                         !quarantine.Contains(x.Symbol) &&
                         !AutopilotSymbolBlocklist.Contains(x.Symbol) &&
-                        !IsStableStablePair(x.Symbol) &&
-                        (x.Symbol.EndsWith("USDT", StringComparison.Ordinal) || x.Symbol.EndsWith("USDC", StringComparison.Ordinal)))
+                        TradingSymbolFilters.IsTradableVolatilePair(x.Symbol))
             .OrderByDescending(x => GetAdjustedScore(x, symbolBias))
             .ToList();
 
@@ -158,9 +152,12 @@ public sealed class AutoTraderService(
             }
 
             // SL algo mas ajustado y TP mayor (mejor R:R frente a perdidas medias grandes).
-            var (sl, tp) = candidate.SuggestedStrategy == StrategyType.Momentum
-                ? (1.85m, 5.2m)
-                : (1.55m, 4.0m);
+            var (sl, tp) = candidate.SuggestedStrategy switch
+            {
+                StrategyType.Momentum => (1.85m, 5.2m),
+                StrategyType.MeanReversion => (1.4m, 2.8m),
+                _ => (1.55m, 4.0m)
+            };
 
             var recyclable = existingAutoBots
                 .Where(x => x.State == BotState.Stopped &&
@@ -258,25 +255,6 @@ public sealed class AutoTraderService(
         }
 
         return true;
-    }
-
-    private static bool IsStableStablePair(string symbol)
-    {
-        if (string.IsNullOrWhiteSpace(symbol))
-        {
-            return false;
-        }
-
-        var upper = symbol.Trim().ToUpperInvariant();
-        string? quote = null;
-        if (upper.EndsWith("USDT", StringComparison.Ordinal)) quote = "USDT";
-        else if (upper.EndsWith("USDC", StringComparison.Ordinal)) quote = "USDC";
-        else if (upper.EndsWith("FDUSD", StringComparison.Ordinal)) quote = "FDUSD";
-        else if (upper.EndsWith("BUSD", StringComparison.Ordinal)) quote = "BUSD";
-        if (quote is null) return false;
-
-        var baseAsset = upper[..^quote.Length];
-        return StableAssets.Contains(baseAsset) && StableAssets.Contains(quote);
     }
 
     private async Task<Dictionary<string, decimal>> BuildSymbolBiasMapAsync(DateTime nowUtc)

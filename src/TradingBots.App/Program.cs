@@ -10,6 +10,7 @@ using TradingBots.App.Data;
 using TradingBots.App.Components;
 using TradingBots.App.Models;
 using TradingBots.App.Services;
+using TradingBots.App.Services.Strategies;
 using TradingBots.App;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -55,8 +56,16 @@ builder.Services.AddScoped<IMarketAdvisorService, MarketAdvisorService>();
 builder.Services.AddScoped<IAutoTraderService, AutoTraderService>();
 builder.Services.AddScoped<IBotSupervisorService, BotSupervisorService>();
 builder.Services.AddScoped<IControlAutotuneService, ControlAutotuneService>();
+builder.Services.AddScoped<IMarketHistoryService, MarketHistoryService>();
+builder.Services.AddScoped<IBacktestService, BacktestService>();
+builder.Services.AddScoped<IBotMaintenanceService, BotMaintenanceService>();
+builder.Services.AddSingleton<IStrategySignalProvider, MomentumStrategySignal>();
+builder.Services.AddSingleton<IStrategySignalProvider, PullbackStrategySignal>();
+builder.Services.AddSingleton<IStrategySignalProvider, MeanReversionStrategySignal>();
+builder.Services.AddSingleton<IStrategySignalRegistry, StrategySignalRegistry>();
 builder.Services.AddSingleton<IRuntimeStatusService, RuntimeStatusService>();
 builder.Services.AddHostedService<BotExecutionBackgroundService>();
+builder.Services.AddHostedService<MarketHistoryBackgroundService>();
 
 // --- Autenticacion JWT (comentada: app publica, ver PublicAppMode.Enabled) ---
 // var jwtSettings = builder.Configuration.GetSection(JwtSettings.SectionName).Get<JwtSettings>() ?? new JwtSettings();
@@ -401,6 +410,21 @@ using (var scope = app.Services.CreateScope())
             CREATE INDEX [IX_MlTradeObservations_BotId_Symbol_EntryAtUtc] ON [MlTradeObservations]([BotId],[Symbol],[EntryAtUtc]);
             CREATE INDEX [IX_MlTradeObservations_ClosedAtUtc] ON [MlTradeObservations]([ClosedAtUtc]);
         END
+        IF OBJECT_ID(N'[MarketCandles]', N'U') IS NULL
+        BEGIN
+            CREATE TABLE [MarketCandles](
+                [Id] bigint NOT NULL IDENTITY(1,1) PRIMARY KEY,
+                [Symbol] nvarchar(30) NOT NULL,
+                [Interval] nvarchar(10) NOT NULL,
+                [OpenTimeUtc] datetime2 NOT NULL,
+                [Open] decimal(18,8) NOT NULL,
+                [High] decimal(18,8) NOT NULL,
+                [Low] decimal(18,8) NOT NULL,
+                [Close] decimal(18,8) NOT NULL,
+                [QuoteVolume] decimal(18,2) NOT NULL
+            );
+            CREATE UNIQUE INDEX [IX_MarketCandles_Symbol_Interval_OpenTimeUtc] ON [MarketCandles]([Symbol],[Interval],[OpenTimeUtc]);
+        END
         """);
     }
 
@@ -420,6 +444,23 @@ using (var scope = app.Services.CreateScope())
             """UPDATE "Bots" SET "LastRunningStartedAtUtc" = "UpdatedAtUtc" WHERE "State" = 1 AND "LastRunningStartedAtUtc" IS NULL;""");
         await db.Database.ExecuteSqlRawAsync(
             """ALTER TABLE "Bots" ADD COLUMN IF NOT EXISTS "AutoResumeBlocked" boolean NOT NULL DEFAULT FALSE;""");
+        await db.Database.ExecuteSqlRawAsync("""
+            CREATE TABLE IF NOT EXISTS "MarketCandles"(
+                "Id" bigserial PRIMARY KEY,
+                "Symbol" varchar(30) NOT NULL,
+                "Interval" varchar(10) NOT NULL,
+                "OpenTimeUtc" timestamp with time zone NOT NULL,
+                "Open" numeric(18,8) NOT NULL,
+                "High" numeric(18,8) NOT NULL,
+                "Low" numeric(18,8) NOT NULL,
+                "Close" numeric(18,8) NOT NULL,
+                "QuoteVolume" numeric(18,2) NOT NULL
+            );
+            """);
+        await db.Database.ExecuteSqlRawAsync("""
+            CREATE UNIQUE INDEX IF NOT EXISTS "IX_MarketCandles_Symbol_Interval_OpenTimeUtc"
+            ON "MarketCandles"("Symbol","Interval","OpenTimeUtc");
+            """);
     }
 
     if (db.Database.IsSqlite())
@@ -891,6 +932,87 @@ app.MapGet("/api/dashboard/trade-kpis", async (string? dateFrom, string? dateTo,
     };
 
     return Results.Ok(summary);
+});
+
+app.MapGet("/api/market/regime", async (string? symbolCsv, IMarketHistoryService marketHistory) =>
+{
+    var list = string.IsNullOrWhiteSpace(symbolCsv)
+        ? Array.Empty<string>()
+        : symbolCsv.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+    if (list.Length == 0)
+    {
+        return Results.BadRequest(new { error = "Indica symbolCsv=BTCUSDT,ETHUSDT" });
+    }
+
+    var regimes = await marketHistory.GetRegimesAsync(list);
+    return Results.Ok(regimes.Values.OrderBy(x => x.Symbol));
+});
+
+app.MapPost("/api/market/history/sync", async (string? symbolCsv, IMarketHistoryService marketHistory) =>
+{
+    var list = string.IsNullOrWhiteSpace(symbolCsv)
+        ? new[] { "BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT" }
+        : symbolCsv.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+    await marketHistory.SyncSymbolsAsync(list);
+    return Results.Ok(new { synced = list.Length, symbols = list });
+});
+
+app.MapPost("/api/backtest/run", async (BacktestRequest request, IBacktestService backtest) =>
+    Results.Ok(await backtest.RunAsync(request)));
+
+app.MapGet("/api/bots/regime-status", async (IBotMaintenanceService maintenance) =>
+    Results.Ok(await maintenance.GetBotRegimeStatusAsync()));
+
+app.MapPost("/api/bots/maintenance/consolidate", async (IBotMaintenanceService maintenance) =>
+    Results.Ok(await maintenance.ConsolidateFleetAsync()));
+
+app.MapGet("/api/system/cohort-readiness", async (AppDbContext db) =>
+{
+    var sellTrades = await db.Trades.Where(x => x.Side == "SELL").ToListAsync();
+    var bots = await db.Bots.ToListAsync();
+    var grouped = sellTrades.GroupBy(x => x.BotId).ToDictionary(x => x.Key, x => x.ToList());
+    var analytics = new List<BotAnalyticsItem>();
+    foreach (var bot in bots)
+    {
+        var closed = grouped.TryGetValue(bot.Id, out var list) ? list : [];
+        var wins = closed.Where(x => x.RealizedPnlUsdt > 0m).ToList();
+        var losses = closed.Where(x => x.RealizedPnlUsdt < 0m).ToList();
+        var sumWins = wins.Sum(x => x.RealizedPnlUsdt);
+        var sumLossAbs = Math.Abs(losses.Sum(x => x.RealizedPnlUsdt));
+        var pf = sumLossAbs <= 0m ? (sumWins > 0m ? 999m : 0m) : sumWins / sumLossAbs;
+        analytics.Add(new BotAnalyticsItem
+        {
+            BotId = bot.Id,
+            BotName = bot.Name,
+            ClosedTrades = closed.Count,
+            WinRatePercent = closed.Count == 0 ? 0m : decimal.Round((wins.Count * 100m) / closed.Count, 2),
+            ProfitFactor = decimal.Round(pf, 4),
+            NetRealizedUsdt = decimal.Round(closed.Sum(x => x.RealizedPnlUsdt), 4)
+        });
+    }
+
+    var totalClosed = sellTrades.Count;
+    var aggWins = sellTrades.Where(x => x.RealizedPnlUsdt > 0m).Sum(x => x.RealizedPnlUsdt);
+    var aggLoss = Math.Abs(sellTrades.Where(x => x.RealizedPnlUsdt < 0m).Sum(x => x.RealizedPnlUsdt));
+    var aggPf = aggLoss <= 0m ? (aggWins > 0m ? 999m : 0m) : aggWins / aggLoss;
+    var aggNet = sellTrades.Sum(x => x.RealizedPnlUsdt);
+    var tier = totalClosed >= 200 && aggPf > 1.2m && aggNet > 0m ? "VERDE" :
+        totalClosed >= 100 && aggPf >= 1.0m ? "AMARILLO" : "ROJO";
+    return Results.Ok(new CohortReadinessView
+    {
+        LiveReadyBySample = tier is "VERDE" or "AMARILLO",
+        TotalClosedSells = totalClosed,
+        AggregateProfitFactor = decimal.Round(aggPf, 4),
+        AggregateNetPnlUsdt = decimal.Round(aggNet, 4),
+        Tier = tier,
+        Summary = tier switch
+        {
+            "VERDE" => "Muestra y edge adecuados para considerar Live con tamano pequeno.",
+            "AMARILLO" => "Edge moderado; seguir en paper y acumular mas cierres.",
+            _ => "Muestra insuficiente o edge no confirmado; permanecer en paper."
+        },
+        BotAnalytics = analytics.OrderByDescending(x => x.NetRealizedUsdt).ToList()
+    });
 });
 
 app.MapRazorComponents<App>()

@@ -4,6 +4,7 @@
 @inject UiLoadingState Loading
 @inject ClientAuthSession Auth
 @implements IDisposable
+@using TradingBots.App.Models
 
 <PageTitle>Dashboard</PageTitle>
 <h1 class="tb-page-title">Dashboard</h1>
@@ -197,6 +198,35 @@ else
         </tbody>
     </table>
 
+    <h4 class="mt-4">Preparacion para Live (cohorte)</h4>
+    @if (_cohort is not null)
+    {
+        <div class="alert @(_cohort.Tier == "VERDE" ? "alert-success" : _cohort.Tier == "AMARILLO" ? "alert-warning" : "alert-danger")">
+            <strong>Semaforo: @_cohort.Tier</strong> — @_cohort.Summary
+            <div class="small mt-1">Cierres SELL: @_cohort.TotalClosedSells · PF agregado: @_cohort.AggregateProfitFactor.ToString("0.00") · PnL: @_cohort.AggregateNetPnlUsdt.ToString("0.00") USDT</div>
+        </div>
+    }
+
+    <h4 class="mt-4">Regimen D1 por bot</h4>
+    @if (_regimes.Count > 0)
+    {
+        <table class="table table-sm table-striped mb-4">
+            <thead><tr><th>Bot</th><th>Par</th><th>Regimen</th><th>Pct 90d</th><th>Tendencia D1</th></tr></thead>
+            <tbody>
+                @foreach (var r in _regimes.Take(15))
+                {
+                    <tr>
+                        <td>@r.BotName</td>
+                        <td>@r.Symbol</td>
+                        <td>@r.RegimeSummary</td>
+                        <td>@(r.HasRegimeData ? r.PricePercentile90d.ToString("0.#") : "—")</td>
+                        <td>@(r.HasRegimeData ? (r.DailyTrendUp ? "Alcista" : "Bajista") : "—")</td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    }
+
     <h4 class="mt-4">Profit/Perdida por bot</h4>
     <table class="table table-sm table-striped">
         <thead>
@@ -218,6 +248,8 @@ else
 @code {
     private DashboardSummary? _summary;
     private TradeKpisSummary? _kpis;
+    private CohortReadinessView? _cohort;
+    private List<BotRegimeStatusItem> _regimes = [];
     private string _errorMessage = string.Empty;
     private string _kpiError = string.Empty;
     private bool _kpiLoading;
@@ -227,7 +259,8 @@ else
     protected override async Task OnInitializedAsync()
     {
         Auth.SessionChanged += OnAuthChanged;
-        await Task.WhenAll(LoadSummaryAsync(), LoadKpisAsync());
+        await Auth.InitializeFromBrowserAsync();
+        await Task.WhenAll(LoadSummaryAsync(), LoadKpisAsync(), LoadInsightsAsync());
     }
 
     private void OnAuthChanged()
@@ -240,6 +273,31 @@ else
     }
 
     public void Dispose() => Auth.SessionChanged -= OnAuthChanged;
+
+    private async Task LoadInsightsAsync()
+    {
+        try
+        {
+            var client = HttpFactory.CreateClient();
+            client.BaseAddress = new Uri(Nav.BaseUri);
+            using var cohortResp = await client.GetAsync("/api/system/cohort-readiness");
+            if (cohortResp.IsSuccessStatusCode)
+            {
+                _cohort = await cohortResp.Content.ReadFromJsonAsync<CohortReadinessView>();
+            }
+
+            using var regimeResp = await client.GetAsync("/api/bots/regime-status");
+            if (regimeResp.IsSuccessStatusCode)
+            {
+                var items = await regimeResp.Content.ReadFromJsonAsync<List<BotRegimeStatusItem>>();
+                _regimes = items ?? [];
+            }
+        }
+        catch
+        {
+            // Insights opcionales; no bloquean el dashboard.
+        }
+    }
 
     private async Task LoadSummaryAsync()
     {

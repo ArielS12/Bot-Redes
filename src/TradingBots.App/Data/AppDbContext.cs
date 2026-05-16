@@ -12,6 +12,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
     public DbSet<BinanceConnectionSettings> BinanceSettings => Set<BinanceConnectionSettings>();
     public DbSet<InvestmentSuggestion> InvestmentSuggestions => Set<InvestmentSuggestion>();
     public DbSet<MlTradeObservation> MlTradeObservations => Set<MlTradeObservation>();
+    public DbSet<MarketCandle> MarketCandles => Set<MarketCandle>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -76,7 +77,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
         {
             entity.HasKey(x => x.Id);
             entity.Property(x => x.ExecutionMode).HasConversion<int>();
-            entity.Property(x => x.MaxAutoBots).HasDefaultValue(10);
+            entity.Property(x => x.MaxAutoBots).HasDefaultValue(8);
             entity.Property(x => x.AutoControlTuningEnabled).HasDefaultValue(true);
             entity.Property(x => x.SupervisorInactiveMinutes).HasDefaultValue(180);
             entity.Property(x => x.RebalanceOutOfTopCycles).HasDefaultValue(3);
@@ -136,6 +137,19 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             entity.Property(x => x.IsWin).IsRequired(false);
             entity.HasIndex(x => new { x.BotId, x.Symbol, x.EntryAtUtc });
             entity.HasIndex(x => x.ClosedAtUtc);
+        });
+
+        modelBuilder.Entity<MarketCandle>(entity =>
+        {
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.Symbol).HasMaxLength(30).IsRequired();
+            entity.Property(x => x.Interval).HasMaxLength(10).IsRequired();
+            entity.Property(x => x.Open).HasColumnType("decimal(18,8)");
+            entity.Property(x => x.High).HasColumnType("decimal(18,8)");
+            entity.Property(x => x.Low).HasColumnType("decimal(18,8)");
+            entity.Property(x => x.Close).HasColumnType("decimal(18,8)");
+            entity.Property(x => x.QuoteVolume).HasColumnType("decimal(18,2)");
+            entity.HasIndex(x => new { x.Symbol, x.Interval, x.OpenTimeUtc }).IsUnique();
         });
     }
 }
