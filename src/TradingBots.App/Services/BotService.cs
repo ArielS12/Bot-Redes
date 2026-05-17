@@ -33,7 +33,7 @@ public sealed class BotService(
     /// <summary>Mínimo de notional por orden de compra (coherente con filtros típicos MIN_NOTIONAL en Binance).</summary>
     private const decimal MinQuoteOrderUsdt = 10m;
     private const decimal MinQuoteVolume24hUsdt = 750_000m;
-    private const decimal MinRelativeVolume = 0.6m;
+    private const decimal MinRelativeVolume = 0.45m;
     private const decimal BaseRiskPercentPerTrade = 0.50m;
     private const int ExecutionFailureCircuitThreshold = 3;
     private static readonly TimeSpan ExecutionFailureCircuitDuration = TimeSpan.FromMinutes(20);

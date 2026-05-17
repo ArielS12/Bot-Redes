@@ -40,6 +40,12 @@ else
         <strong>Auto-creator:</strong> @_summary.LastAutoTraderStatus
         <span class="ms-2">(@(_summary.LastAutoTraderRunUtc?.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss") ?? "sin fecha"))</span>
     </div>
+    @if (_summary.LastAutoTraderRunUtc is null || DateTime.UtcNow - _summary.LastAutoTraderRunUtc.Value > TimeSpan.FromMinutes(2))
+    {
+        <div class="alert alert-warning py-2 mb-3">
+            El motor de ejecucion no ha corrido en los ultimos 2 minutos. Los bots solo operan con la aplicacion en marcha (ciclo cada ~10 s).
+        </div>
+    }
     <div class="mb-3">
         <span class="badge @ExecutionBadgeClass(_summary)">
             @ExecutionBadgeText(_summary)

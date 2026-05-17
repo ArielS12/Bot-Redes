@@ -51,6 +51,13 @@ public sealed class BotSupervisorService(
                 continue;
             }
 
+            // No detener bots que aun no han ejecutado ninguna operacion: suelen estar
+            // esperando senal (filtros estrictos) y el supervisor creaba un ciclo sin trades.
+            if (!lastTradeByBot.ContainsKey(bot.Id))
+            {
+                continue;
+            }
+
             var sym = bot.Symbols.FirstOrDefault() ?? string.Empty;
             if (!string.IsNullOrWhiteSpace(sym) &&
                 recentAdvisorBuys.Contains(sym))

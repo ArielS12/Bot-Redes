@@ -71,13 +71,41 @@ public sealed class BotMaintenanceService(
             }
         }
 
+        var reactivated = 0;
+        var runningNow = bots.Count(x => x.State == BotState.Running);
+        var slots = Math.Max(0, maxRunning - runningNow);
+        if (slots > 0)
+        {
+            foreach (var bot in bots.Where(x =>
+                         x.State == BotState.Stopped &&
+                         x.IsAutoManaged &&
+                         !x.AutoResumeBlocked &&
+                         x.PositionQuantity <= 0m &&
+                         !string.IsNullOrWhiteSpace(x.LastExecutionError) &&
+                         x.LastExecutionError.Contains("Supervisor:", StringComparison.OrdinalIgnoreCase) &&
+                         x.LastExecutionError.Contains("inactividad", StringComparison.OrdinalIgnoreCase) &&
+                         x.Symbols.Any(TradingSymbolFilters.IsTradableVolatilePair))
+                     .OrderByDescending(x => x.UpdatedAtUtc)
+                     .Take(slots))
+            {
+                bot.State = BotState.Running;
+                bot.LastRunningStartedAtUtc = now;
+                bot.LastExecutionError = string.Empty;
+                bot.UpdatedAtUtc = now;
+                reactivated++;
+            }
+        }
+
         await db.SaveChangesAsync(ct);
         var runningAfter = await db.Bots.CountAsync(x => x.State == BotState.Running, ct);
         return new BotMaintenanceResult
         {
             StoppedInactiveBots = stopped,
+            ReactivatedBots = reactivated,
             RunningBotsAfter = runningAfter,
-            Message = $"Consolidacion: {stopped} bot(s) detenidos. En ejecucion: {runningAfter} (max auto {maxRunning})."
+            Message = reactivated > 0
+                ? $"Consolidacion: {stopped} detenido(s), {reactivated} reactivado(s) tras parada del supervisor. En ejecucion: {runningAfter} (max {maxRunning})."
+                : $"Consolidacion: {stopped} bot(s) detenidos. En ejecucion: {runningAfter} (max auto {maxRunning})."
         };
     }
 
