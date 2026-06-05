@@ -28,6 +28,7 @@ public sealed class BotService(
     ITradeMlService tradeMlService,
     IStrategySignalRegistry strategySignals,
     IMarketHistoryService marketHistory,
+    IMarketStructureService marketStructure,
     ILogger<BotService> logger) : IBotService
 {
     /// <summary>Mínimo de notional por orden de compra (coherente con filtros típicos MIN_NOTIONAL en Binance).</summary>
@@ -301,6 +302,7 @@ public sealed class BotService(
         var technical5mBySymbol = await marketService.GetTechnicalSnapshotsAsync(symbols, "5m", 200);
         var technical15mBySymbol = await marketService.GetTechnicalSnapshotsAsync(symbols, "15m", 200);
         var regimeBySymbol = await marketHistory.GetRegimesAsync(symbols);
+        var structureBySymbol = await marketStructure.GetStructuresAsync(symbols);
         foreach (var bot in bots)
         {
             var signals = strategySignals.Get(bot.StrategyType);
@@ -365,9 +367,10 @@ public sealed class BotService(
                            signals.PassesMultiTimeframeTrend(tf5, tf15) &&
                            PassesLiquidityAndVolume(marketSnapshot[x.Symbol], x.Snapshot) &&
                            signals.PassesShortRegimeFilter(x.Snapshot, marketSnapshot[x.Symbol]) &&
-                           signals.PassesLongTermRegime(regime);
+                           signals.PassesLongTermRegime(regime) &&
+                           PassesMarketStructureForBuy(structureBySymbol.GetValueOrDefault(x.Symbol));
                 })
-                .OrderByDescending(x => signals.ScoreBuyCandidate(x.Snapshot))
+                .OrderByDescending(x => signals.ScoreBuyCandidate(x.Snapshot) + ScoreMarketStructureBonus(structureBySymbol.GetValueOrDefault(x.Symbol)))
                 .FirstOrDefault();
             var buySignal = buyCandidate is not null;
             var activeTechnical = technicalBySymbol.TryGetValue(activeSymbol, out var t) ? t : null;
@@ -385,6 +388,8 @@ public sealed class BotService(
             var timeStopHit = bot.PositionOpenedAtUtc is not null &&
                               bot.MaxHoldingMinutes > 0 &&
                               DateTime.UtcNow >= bot.PositionOpenedAtUtc.Value.AddMinutes(bot.MaxHoldingMinutes);
+            var activeStructure = structureBySymbol.GetValueOrDefault(activeSymbol);
+            var contextDefensiveExitHit = ShouldMarketStructureDefensiveExit(activeStructure, pnlPct);
             var profitableNow = bot.PositionQuantity > 0m && bot.AverageEntryPrice > 0m && activePrice > bot.AverageEntryPrice;
             var investedCapital = bot.PositionQuantity > 0m && bot.AverageEntryPrice > 0m
                 ? bot.PositionQuantity * bot.AverageEntryPrice
@@ -538,8 +543,8 @@ public sealed class BotService(
             }
             else if (bot.PositionQuantity > 0m)
             {
-                // Salidas de riesgo (SL/time-stop) deben poder ejecutarse incluso sin profit.
-                var riskExit = stopLossHit || timeStopHit;
+                // Salidas de riesgo (SL/time-stop/contexto roto) deben poder ejecutarse incluso sin profit.
+                var riskExit = stopLossHit || timeStopHit || contextDefensiveExitHit;
                 // Salidas tacticas (senal/TP/trailing) se mantienen condicionadas a profit.
                 var tacticalExit = profitableNow && (sellSignal || takeProfitHit || trailingStopHit || pnlPct >= bot.TakeProfit2Percent);
                 var requestFullExit = riskExit || tacticalExit;
@@ -767,6 +772,7 @@ public sealed class BotService(
         var technical5mBySymbol = await marketService.GetTechnicalSnapshotsAsync(allSymbols, "5m", 200);
         var technical15mBySymbol = await marketService.GetTechnicalSnapshotsAsync(allSymbols, "15m", 200);
         var regimeBySymbol = await marketHistory.GetRegimesAsync(allSymbols);
+        var structureBySymbol = await marketStructure.GetStructuresAsync(allSymbols);
         var result = new List<BotSignalDiagnosticsItem>();
 
         foreach (var bot in bots)
@@ -812,6 +818,8 @@ public sealed class BotService(
             var timeStopHit = bot.PositionOpenedAtUtc is not null &&
                               bot.MaxHoldingMinutes > 0 &&
                               DateTime.UtcNow >= bot.PositionOpenedAtUtc.Value.AddMinutes(bot.MaxHoldingMinutes);
+            var activeStructure = structureBySymbol.GetValueOrDefault(activeSymbol);
+            var contextDefensiveExitHit = ShouldMarketStructureDefensiveExit(activeStructure, pnlPct);
             var tp1Ready = !bot.TakeProfit1Taken && pnlPct >= bot.TakeProfit1Percent;
             var tp2Ready = pnlPct >= bot.TakeProfit2Percent;
             var buyCandidate = selected
@@ -823,8 +831,9 @@ public sealed class BotService(
                     signals.PassesMultiTimeframeTrend(tf5, tf15) &&
                     PassesLiquidityAndVolume(marketSnapshot[x.Symbol], x.Snapshot) &&
                     signals.PassesShortRegimeFilter(x.Snapshot, marketSnapshot[x.Symbol]) &&
-                    signals.PassesLongTermRegime(regimeBySymbol.GetValueOrDefault(x.Symbol)))
-                .OrderByDescending(x => signals.ScoreBuyCandidate(x.Snapshot))
+                    signals.PassesLongTermRegime(regimeBySymbol.GetValueOrDefault(x.Symbol)) &&
+                    PassesMarketStructureForBuy(structureBySymbol.GetValueOrDefault(x.Symbol)))
+                .OrderByDescending(x => signals.ScoreBuyCandidate(x.Snapshot) + ScoreMarketStructureBonus(structureBySymbol.GetValueOrDefault(x.Symbol)))
                 .FirstOrDefault();
 
             var label = "ESPERANDO";
@@ -863,7 +872,9 @@ public sealed class BotService(
                     else if (quoteCandidate >= MinQuoteOrderUsdt)
                     {
                         label = "BUY_LISTO";
-                        reason = $"Entrada valida en {buyCandidate.Symbol} (EMA/MACD/RSI alineados).";
+                        var structure = structureBySymbol.GetValueOrDefault(buyCandidate.Symbol);
+                        var context = structure?.HasData == true ? $" Contexto: {structure.Summary}." : string.Empty;
+                        reason = $"Entrada valida en {buyCandidate.Symbol} (EMA/MACD/RSI alineados).{context}";
                     }
                     else
                     {
@@ -902,7 +913,8 @@ public sealed class BotService(
                     {
                         regimeBySymbol.TryGetValue(activeSymbol, out var longRegime);
                         var regimeMsg = signals.DescribeShortRegimeFailure(activeTechnical, m)
-                            ?? signals.DescribeLongTermRegimeFailure(longRegime);
+                            ?? signals.DescribeLongTermRegimeFailure(longRegime)
+                            ?? DescribeMarketStructureBuyBlock(structureBySymbol.GetValueOrDefault(activeSymbol));
                         reason = regimeMsg
                             ?? "Ningun simbolo del bot cumple todos los filtros a la vez (revisa otros pares en la lista).";
                     }
@@ -913,10 +925,19 @@ public sealed class BotService(
                     reason = $"En cooldown por perdida hasta {bot.CooldownUntilUtc:O}.";
                 }
             }
-            else if (profitableNow && (sellSignal || takeProfitHit || stopLossHit))
+            else if (stopLossHit || timeStopHit || contextDefensiveExitHit)
             {
                 label = "SELL_LISTO";
-                reason = "Salida habilitada por señal tecnica o TP/SL con profit.";
+                reason = stopLossHit
+                    ? "Salida de riesgo por stop loss."
+                    : timeStopHit
+                        ? "Salida de riesgo por tiempo maximo en posicion."
+                        : DescribeMarketStructureDefensiveExit(activeStructure, pnlPct) ?? "Salida defensiva por contexto 30-90d.";
+            }
+            else if (profitableNow && (sellSignal || takeProfitHit))
+            {
+                label = "SELL_LISTO";
+                reason = "Salida habilitada por señal tecnica o take profit con profit.";
             }
             else if (!profitableNow)
             {
@@ -934,7 +955,7 @@ public sealed class BotService(
                 SignalLabel = label,
                 Reason = string.IsNullOrWhiteSpace(bot.LastExecutionError) ? reason : $"{reason} Ultimo error: {bot.LastExecutionError}",
                 ActiveSymbol = activeSymbol,
-                ExitState = BuildExitState(bot, tp1Ready, tp2Ready, trailingArmed, timeStopHit, sellSignal)
+                ExitState = BuildExitState(bot, tp1Ready, tp2Ready, trailingArmed, timeStopHit, sellSignal, stopLossHit, contextDefensiveExitHit)
             });
         }
 
@@ -944,7 +965,107 @@ public sealed class BotService(
     private static bool PassesLiquidityAndVolume(MarketTicker ticker, TechnicalMarketSnapshot technical) =>
         ticker.QuoteVolume24h >= MinQuoteVolume24hUsdt && technical.RelativeVolume >= MinRelativeVolume;
 
-    private static string BuildExitState(TradingBot bot, bool tp1Ready, bool tp2Ready, bool trailingArmed, bool timeStopHit, bool sellSignal)
+    private static bool PassesMarketStructureForBuy(MarketStructureSnapshot? structure) =>
+        DescribeMarketStructureBuyBlock(structure) is null;
+
+    private static decimal ScoreMarketStructureBonus(MarketStructureSnapshot? structure)
+    {
+        if (structure is null || !structure.HasData)
+        {
+            return 0m;
+        }
+
+        var bonus = Math.Clamp(structure.ContextScore, -0.8m, 1.2m);
+        if (structure.HasBullishFlag)
+        {
+            bonus += 0.35m;
+        }
+
+        return decimal.Round(Math.Clamp(bonus, -0.8m, 1.5m), 4);
+    }
+
+    private static string? DescribeMarketStructureBuyBlock(MarketStructureSnapshot? structure)
+    {
+        if (structure is null || !structure.HasData)
+        {
+            return null;
+        }
+
+        if (structure.IsOverextended &&
+            !structure.HasBullishFlag &&
+            (structure.PricePercentile90d >= 92m || structure.Change30dPercent >= 65m))
+        {
+            return $"Contexto 30-90d: sobreextension sin bandera/consolidacion ({structure.Summary}).";
+        }
+
+        if (!structure.HasBullishFlag &&
+            structure.DistanceToResistancePercent is > 0m and < 2.5m)
+        {
+            return $"Contexto 30-90d: precio muy cerca de resistencia 90d ({structure.DistanceToResistancePercent:0.#}% de margen).";
+        }
+
+        if (!structure.HasBullishFlag && structure.ContextScore <= -0.75m)
+        {
+            return $"Contexto 30-90d desfavorable ({structure.Summary}).";
+        }
+
+        return null;
+    }
+
+    private static bool ShouldMarketStructureDefensiveExit(MarketStructureSnapshot? structure, decimal pnlPct) =>
+        DescribeMarketStructureDefensiveExit(structure, pnlPct) is not null;
+
+    private static string? DescribeMarketStructureDefensiveExit(MarketStructureSnapshot? structure, decimal pnlPct)
+    {
+        if (structure is null || !structure.HasData)
+        {
+            return null;
+        }
+
+        if (pnlPct > -0.35m)
+        {
+            return null;
+        }
+
+        if (structure.HasBullishFlag && structure.ContextScore > -0.25m)
+        {
+            return null;
+        }
+
+        if (pnlPct <= -0.8m &&
+            structure.ContextScore <= -0.75m &&
+            !structure.HasBullishFlag)
+        {
+            return $"Salida defensiva: posicion en perdida ({pnlPct:0.##}%) y contexto 30-90d desfavorable ({structure.Summary}).";
+        }
+
+        if (pnlPct <= -0.5m &&
+            structure.IsOverextended &&
+            !structure.HasBullishFlag &&
+            structure.PricePercentile90d >= 90m)
+        {
+            return $"Salida defensiva: perdida ({pnlPct:0.##}%) tras sobreextension sin bandera ({structure.Summary}).";
+        }
+
+        if (pnlPct <= -0.6m &&
+            structure.DistanceToResistancePercent is > 0m and < 2.5m &&
+            structure.ContextScore <= 0m)
+        {
+            return $"Salida defensiva: perdida ({pnlPct:0.##}%) con poco margen hasta resistencia 90d ({structure.DistanceToResistancePercent:0.#}%).";
+        }
+
+        return null;
+    }
+
+    private static string BuildExitState(
+        TradingBot bot,
+        bool tp1Ready,
+        bool tp2Ready,
+        bool trailingArmed,
+        bool timeStopHit,
+        bool sellSignal,
+        bool stopLossHit,
+        bool contextDefensiveExitHit)
     {
         if (bot.PositionQuantity <= 0m)
         {
@@ -956,6 +1077,8 @@ public sealed class BotService(
         if (tp2Ready) states.Add("TP2_LISTO");
         if (trailingArmed) states.Add("TRAILING_ARMADO");
         if (timeStopHit) states.Add("TIME_STOP_LISTO");
+        if (stopLossHit) states.Add("STOP_LOSS_LISTO");
+        if (contextDefensiveExitHit) states.Add("CONTEXTO_DEFENSIVO");
         if (sellSignal) states.Add("SENAL_SALIDA");
         return states.Count == 0 ? "MANTENER" : string.Join(" | ", states);
     }

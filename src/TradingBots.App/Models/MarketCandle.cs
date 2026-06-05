@@ -28,6 +28,28 @@ public sealed class LongTermRegimeSnapshot
     public DateTime? LastDailyOpenUtc { get; set; }
 }
 
+/// <summary>Lectura de estructura 30-90 dias para validar si una entrada tiene contexto.</summary>
+public sealed class MarketStructureSnapshot
+{
+    public string Symbol { get; set; } = string.Empty;
+    public bool HasData { get; set; }
+    public decimal ContextScore { get; set; }
+    public decimal TrendScore { get; set; }
+    public decimal BullishFlagScore { get; set; }
+    public decimal OverextensionPenalty { get; set; }
+    public decimal Change30dPercent { get; set; }
+    public decimal Change90dPercent { get; set; }
+    public decimal PricePercentile90d { get; set; }
+    public decimal Support90d { get; set; }
+    public decimal Resistance90d { get; set; }
+    public decimal DistanceToSupportPercent { get; set; }
+    public decimal DistanceToResistancePercent { get; set; }
+    public bool IsUptrend { get; set; }
+    public bool IsOverextended { get; set; }
+    public bool HasBullishFlag { get; set; }
+    public string Summary { get; set; } = "Sin contexto";
+}
+
 public sealed class KlineBar
 {
     public DateTime OpenTimeUtc { get; set; }

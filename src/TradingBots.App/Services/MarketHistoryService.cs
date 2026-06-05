@@ -17,6 +17,7 @@ public sealed class MarketHistoryService(
 {
     private const int DailyCandleLimit = 365;
     private const int HourlyCandleLimit = 720;
+    private const int FourHourCandleLimit = 540;
     private static readonly SemaphoreSlim SyncGate = new(2, 2);
 
     public async Task SyncSymbolsAsync(IEnumerable<string> symbols, CancellationToken ct = default)
@@ -38,6 +39,7 @@ public sealed class MarketHistoryService(
             try
             {
                 await SyncIntervalAsync(symbol, "1d", DailyCandleLimit, ct);
+                await SyncIntervalAsync(symbol, "4h", FourHourCandleLimit, ct);
                 await SyncIntervalAsync(symbol, "1h", HourlyCandleLimit, ct);
             }
             finally

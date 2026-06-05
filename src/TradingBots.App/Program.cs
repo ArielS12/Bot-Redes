@@ -57,6 +57,7 @@ builder.Services.AddScoped<IAutoTraderService, AutoTraderService>();
 builder.Services.AddScoped<IBotSupervisorService, BotSupervisorService>();
 builder.Services.AddScoped<IControlAutotuneService, ControlAutotuneService>();
 builder.Services.AddScoped<IMarketHistoryService, MarketHistoryService>();
+builder.Services.AddScoped<IMarketStructureService, MarketStructureService>();
 builder.Services.AddScoped<IBacktestService, BacktestService>();
 builder.Services.AddScoped<IBotMaintenanceService, BotMaintenanceService>();
 builder.Services.AddSingleton<IStrategySignalProvider, MomentumStrategySignal>();

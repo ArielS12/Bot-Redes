@@ -12,8 +12,14 @@ public interface IMarketAdvisorService
 
 public sealed class MarketAdvisorService(
     AppDbContext dbContext,
-    IBinanceMarketService marketService) : IMarketAdvisorService
+    IBinanceMarketService marketService,
+    IMarketStructureService marketStructureService) : IMarketAdvisorService
 {
+    private const decimal MinAdvisorQuoteVolume24h = 1_000_000m;
+    private const decimal MinMoverQuoteVolume24h = 250_000m;
+    private const decimal MinMoverChange24hPercent = 6m;
+    private const int MaxAdvisorCandidates = 48;
+
     private static readonly HashSet<string> AdvisorSymbolExclusions = new(StringComparer.Ordinal)
     {
         "UUSDT", "UUSDC"
@@ -27,13 +33,11 @@ public sealed class MarketAdvisorService(
         }
 
         var now = DateTime.UtcNow;
-        var candidates = marketSnapshot
+        var tradable = marketSnapshot
             .Where(IsTradableQuoteAsset)
             .Where(x => !AdvisorSymbolExclusions.Contains(x.Symbol))
-            .Where(x => x.QuoteVolume24h >= 2_500_000m)
-            .OrderByDescending(x => x.QuoteVolume24h)
-            .Take(30)
             .ToList();
+        var candidates = BuildCandidateUniverse(tradable);
         if (candidates.Count == 0)
         {
             return;
@@ -44,11 +48,29 @@ public sealed class MarketAdvisorService(
         var technical5m = await marketService.GetTechnicalSnapshotsAsync(symbols, "5m", 120);
         var technical15m = await marketService.GetTechnicalSnapshotsAsync(symbols, "15m", 120);
 
-        var generated = candidates
-            .Select(x => BuildSuggestion(x, technical1m, technical5m, technical15m, now))
+        var preliminary = candidates
+            .Select(x => BuildSuggestion(x, technical1m, technical5m, technical15m, null, now))
             .Where(x => x is not null)
             .Select(x => x!)
-            .OrderByDescending(x => x.Score)
+            .OrderByDescending(x => x.Signal == "BUY")
+            .ThenByDescending(x => x.Score)
+            .ThenByDescending(x => x.PriceChangePercent24h)
+            .Take(16)
+            .ToList();
+        var structureSymbols = preliminary.Select(x => x.Symbol).ToList();
+        var structures = await marketStructureService.GetStructuresAsync(structureSymbols);
+
+        var generated = candidates
+            .Select(x =>
+            {
+                structures.TryGetValue(x.Symbol, out var structure);
+                return BuildSuggestion(x, technical1m, technical5m, technical15m, structure, now);
+            })
+            .Where(x => x is not null)
+            .Select(x => x!)
+            .OrderByDescending(x => x.Signal == "BUY")
+            .ThenByDescending(x => x.Score)
+            .ThenByDescending(x => x.PriceChangePercent24h)
             .Take(8)
             .ToList();
         if (generated.Count == 0)
@@ -82,14 +104,58 @@ public sealed class MarketAdvisorService(
         return ticker.PriceChangePercent24h >= 0m ? StrategyType.Momentum : StrategyType.Pullback;
     }
 
-    public async Task<List<InvestmentSuggestion>> GetLatestSuggestionsAsync(int take = 8) =>
-        await dbContext.InvestmentSuggestions
+    public async Task<List<InvestmentSuggestion>> GetLatestSuggestionsAsync(int take = 8)
+    {
+        var recent = await dbContext.InvestmentSuggestions
             .OrderByDescending(x => x.CreatedAtUtc)
-            .Take(take)
+            .Take(Math.Max(take * 8, 32))
             .ToListAsync();
+
+        return recent
+            .GroupBy(x => x.Symbol, StringComparer.OrdinalIgnoreCase)
+            .Select(g => g.OrderByDescending(x => x.CreatedAtUtc).First())
+            .OrderByDescending(x => x.Signal == "BUY")
+            .ThenByDescending(x => x.Score)
+            .ThenByDescending(x => x.PriceChangePercent24h)
+            .Take(take)
+            .ToList();
+    }
 
     private static bool IsTradableQuoteAsset(MarketTicker x) =>
         TradingSymbolFilters.IsTradableVolatilePair(x.Symbol);
+
+    private static List<MarketTicker> BuildCandidateUniverse(List<MarketTicker> tradable)
+    {
+        var byLiquidity = tradable
+            .Where(x => x.QuoteVolume24h >= MinAdvisorQuoteVolume24h)
+            .OrderByDescending(x => x.QuoteVolume24h)
+            .Take(24);
+
+        var topMovers = tradable
+            .Where(x => x.QuoteVolume24h >= MinMoverQuoteVolume24h)
+            .Where(x => x.PriceChangePercent24h >= MinMoverChange24hPercent)
+            .OrderByDescending(x => x.PriceChangePercent24h)
+            .Take(20);
+
+        var liquidityWeightedMovers = tradable
+            .Where(x => x.QuoteVolume24h >= MinMoverQuoteVolume24h)
+            .OrderByDescending(x => Math.Abs(x.PriceChangePercent24h) * Log10Score(x.QuoteVolume24h))
+            .Take(16);
+
+        return byLiquidity
+            .Concat(topMovers)
+            .Concat(liquidityWeightedMovers)
+            .GroupBy(x => x.Symbol, StringComparer.Ordinal)
+            .Select(g => g.First())
+            .Take(MaxAdvisorCandidates)
+            .ToList();
+    }
+
+    private static decimal Log10Score(decimal value) =>
+        value <= 0m ? 0m : (decimal)Math.Log10((double)value);
+
+    private static string TrimRationale(string rationale) =>
+        rationale.Length <= 500 ? rationale : rationale[..497] + "...";
 
     private static decimal ScoreFlatMarketPenalty(decimal change24h) =>
         Math.Abs(change24h) < 0.18m ? 0.28m : 0m;
@@ -99,6 +165,7 @@ public sealed class MarketAdvisorService(
         IReadOnlyDictionary<string, TechnicalMarketSnapshot> tf1,
         IReadOnlyDictionary<string, TechnicalMarketSnapshot> tf5,
         IReadOnlyDictionary<string, TechnicalMarketSnapshot> tf15,
+        MarketStructureSnapshot? structure,
         DateTime now)
     {
         if (!tf1.TryGetValue(ticker.Symbol, out var t1) ||
@@ -120,11 +187,15 @@ public sealed class MarketAdvisorService(
         var volatilityPenalty = ScoreVolatilityPenalty(ticker.PriceChangePercent24h, t1);
         var costPenalty = ScoreExecutionCostPenalty(ticker, t1);
         var flatPenalty = ScoreFlatMarketPenalty(ticker.PriceChangePercent24h);
-        var totalScore = Math.Max(0m, trendStrength + momentumStrength + liquidityStrength - volatilityPenalty - costPenalty - flatPenalty);
+        var contextScore = ScoreMarketContext(structure);
+        var totalScore = Math.Max(0m, trendStrength + momentumStrength + liquidityStrength + contextScore - volatilityPenalty - costPenalty - flatPenalty);
 
         var confidence = totalScore >= 6.5m ? "ALTA" : totalScore >= 4.5m ? "MEDIA" : "BAJA";
         var signal = totalScore >= 5.05m ? "BUY" : totalScore >= 3.35m ? "WATCH" : "HOLD";
-        var rationale = $"Confianza {confidence}. Trend={trendStrength:0.00}, Momentum={momentumStrength:0.00}, Liquidez={liquidityStrength:0.00}, Riesgo={volatilityPenalty:0.00}, Coste={costPenalty:0.00}.";
+        var contextText = structure?.HasData == true
+            ? $"Contexto={contextScore:0.00} ({structure.Summary})"
+            : "Contexto=sin historial 30-90d";
+        var rationale = $"Confianza {confidence}. 24h={ticker.PriceChangePercent24h:0.##}%, Trend={trendStrength:0.00}, Momentum={momentumStrength:0.00}, Liquidez={liquidityStrength:0.00}, {contextText}, Riesgo={volatilityPenalty:0.00}, Coste={costPenalty:0.00}.";
 
         return new InvestmentSuggestion
         {
@@ -132,7 +203,7 @@ public sealed class MarketAdvisorService(
             Signal = signal,
             Score = decimal.Round(totalScore, 4),
             PriceChangePercent24h = ticker.PriceChangePercent24h,
-            Rationale = rationale,
+            Rationale = TrimRationale(rationale),
             CreatedAtUtc = now,
             SuggestedStrategy = strategy
         };
@@ -153,8 +224,46 @@ public sealed class MarketAdvisorService(
         decimal score = 0m;
         if (t1.MacdLine > t1.MacdSignal && t1.MacdHistogram > t1.PreviousMacdHistogram) score += 1.2m;
         if (t1.Rsi14 is >= 50m and <= 72m) score += 1.1m;
-        score += Math.Min(1.2m, Math.Abs(change24h) / 25m);
+        if (change24h > 0m)
+        {
+            score += Math.Min(1.8m, change24h / 18m);
+        }
+        else
+        {
+            score += Math.Min(0.9m, Math.Abs(change24h) / 25m);
+        }
         return score;
+    }
+
+    private static decimal ScoreMarketContext(MarketStructureSnapshot? structure)
+    {
+        if (structure is null || !structure.HasData)
+        {
+            return 0m;
+        }
+
+        var score = structure.ContextScore;
+        if (structure.HasBullishFlag)
+        {
+            score += 0.35m;
+        }
+
+        if (structure.IsOverextended && !structure.HasBullishFlag)
+        {
+            score -= 0.35m;
+        }
+
+        if (structure.DistanceToResistancePercent is > 0m and < 3m)
+        {
+            score -= 0.25m;
+        }
+
+        if (structure.DistanceToSupportPercent is >= 3m and <= 18m)
+        {
+            score += 0.15m;
+        }
+
+        return decimal.Round(Math.Clamp(score, -1.5m, 2.5m), 4);
     }
 
     private static decimal ScoreLiquidity(decimal quoteVol24h, decimal relativeVolume)
