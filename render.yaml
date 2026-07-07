@@ -1,16 +1,20 @@
 # Blueprint Render: web + Postgres persistente (los datos sobreviven redeploys/restarts).
+# Region frankfurt (UE): necesario para API Binance testnet (Oregon/USA devuelve HTTP 451).
 # Despliegue: Render Dashboard -> New + -> Blueprint -> conectar repo.
+# Nota: la region no se puede cambiar en recursos ya creados; hay que recrearlos si venian de oregon.
 
 databases:
   - name: tradingbots-db
     plan: free
     databaseName: tradingbots
+    region: frankfurt
 
 services:
   - type: web
     name: tradingbots-platform-poc
     runtime: docker
     plan: free
+    region: frankfurt
     dockerfilePath: ./src/TradingBots.App/Dockerfile
     autoDeploy: true
     envVars:
