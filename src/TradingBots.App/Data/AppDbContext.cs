@@ -88,6 +88,10 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             entity.Property(x => x.MlShadowMode).HasDefaultValue(true);
             entity.Property(x => x.MlMinWinProbability).HasColumnType("decimal(10,4)").HasDefaultValue(0.55m);
             entity.Property(x => x.MlMinSamples).HasDefaultValue(80);
+            entity.Property(x => x.GlobalMaxDailyLossUsdt).HasColumnType("decimal(18,2)").HasDefaultValue(15m);
+            entity.Property(x => x.BtcCrashGatePercent).HasColumnType("decimal(10,4)").HasDefaultValue(3m);
+            entity.Property(x => x.MaxConcurrentAltPositions).HasDefaultValue(4);
+            entity.Property(x => x.NeverTradedStopHours).HasDefaultValue(36);
             entity.Property(x => x.ApiKey).HasMaxLength(300);
             entity.Property(x => x.ApiSecret).HasMaxLength(300);
         });
@@ -135,6 +139,8 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             entity.Property(x => x.QuoteVolume24h).HasColumnType("decimal(18,2)");
             entity.Property(x => x.RealizedPnlUsdt).HasColumnType("decimal(18,4)");
             entity.Property(x => x.IsWin).IsRequired(false);
+            entity.Property(x => x.IsShadow).HasDefaultValue(false);
+            entity.Property(x => x.RejectReason).HasMaxLength(200);
             entity.HasIndex(x => new { x.BotId, x.Symbol, x.EntryAtUtc });
             entity.HasIndex(x => x.ClosedAtUtc);
         });

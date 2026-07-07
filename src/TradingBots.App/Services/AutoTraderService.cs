@@ -14,23 +14,17 @@ public sealed class AutoTraderService(
     IMarketAdvisorService advisorService,
     IBinanceSettingsService settingsService) : IAutoTraderService
 {
-    /// <summary>Pares con historial de churn / micro-edge que no aportan a AutoPilot.</summary>
     private static readonly HashSet<string> AutopilotSymbolBlocklist = new(StringComparer.Ordinal)
     {
         "UUSDT", "UUSDC"
     };
 
-    /// <summary>Equilibrio: abre algo mas de flujo para muestras ML, manteniendo un umbral de calidad.</summary>
     private const decimal MinAdjustedBuyScore = 4.9m;
-    /// <summary>Si el sesgo reciente del simbolo es negativo, exigimos score bruto mayor para evitar deterioro de win-rate.</summary>
     private const decimal MinSymbolBiasForStandardEntry = -0.25m;
     private const decimal MinRawScoreWhenBiasNegative = 5.2m;
-
-    /// <summary>Ventana algo mas amplia para capturar mas setups validos entre ciclos del analista.</summary>
     private const int SuggestionTtlMinutes = 18;
-
-    /// <summary>Tras paradas operativas (supervisor inactividad o rebalanceo fuera del top), no usar el cooldown largo de settings.</summary>
     private static readonly TimeSpan RecycleCooldownAfterOperationalStop = TimeSpan.FromSeconds(90);
+    private static readonly TimeSpan IdleSlotReleaseWindow = TimeSpan.FromHours(48);
 
     private const int SymbolQuarantineLookbackDays = 7;
     private const int MinSellsForSymbolQuarantine = 12;
@@ -45,6 +39,18 @@ public sealed class AutoTraderService(
         var existingAutoBots = await dbContext.Bots
             .Where(x => x.IsAutoManaged)
             .ToListAsync();
+
+        var autoBotIds = existingAutoBots.Select(x => x.Id).ToList();
+        var lastTradeByBot = await dbContext.Trades
+            .Where(x => autoBotIds.Contains(x.BotId))
+            .GroupBy(x => x.BotId)
+            .Select(g => new { BotId = g.Key, LastTradeAtUtc = g.Max(t => t.ExecutedAtUtc) })
+            .ToDictionaryAsync(x => x.BotId, x => x.LastTradeAtUtc);
+        var tradeCountByBot = await dbContext.Trades
+            .Where(x => autoBotIds.Contains(x.BotId))
+            .GroupBy(x => x.BotId)
+            .Select(g => new { BotId = g.Key, Count = g.Count() })
+            .ToDictionaryAsync(x => x.BotId, x => x.Count);
 
         foreach (var bot in existingAutoBots.Where(x =>
                      x.State == BotState.Running &&
@@ -88,26 +94,42 @@ public sealed class AutoTraderService(
         var minStoppedBeforeReactivate = TimeSpan.FromMinutes(Math.Clamp(settings.MinStoppedBeforeReactivateMinutes <= 0 ? 5 : settings.MinStoppedBeforeReactivateMinutes, 2, 30));
         var minStoppedAfterRiskMinutes = Math.Clamp(settings.MinStoppedAfterRiskStopMinutes <= 0 ? 45 : settings.MinStoppedAfterRiskStopMinutes, 15, 240);
         var outOfTopCyclesToPause = Math.Clamp(settings.RebalanceOutOfTopCycles <= 0 ? 4 : settings.RebalanceOutOfTopCycles, 2, 6);
-        var target = candidates
-            .Take(maxAutoBots)
-            .ToList();
+        var target = candidates.Take(maxAutoBots).ToList();
         var targetSymbols = target.Select(x => x.Symbol).ToHashSet(StringComparer.Ordinal);
 
-        // Rebalanceo continuo: pausa bots auto sin posicion que ya no esten en el top actual del analista.
-        foreach (var running in existingAutoBots.Where(x => x.State == BotState.Running))
+        // Liberar slots: bots sin trades en 48h+ y fuera del top del analista.
+        foreach (var idle in existingAutoBots.Where(x =>
+                     x.State == BotState.Running &&
+                     !x.AutoResumeBlocked &&
+                     x.PositionQuantity <= 0m))
         {
-            if (running.AutoResumeBlocked)
+            var sym = idle.Symbols.FirstOrDefault() ?? string.Empty;
+            var trades = tradeCountByBot.GetValueOrDefault(idle.Id);
+            if (trades > 0 || string.IsNullOrWhiteSpace(sym) || targetSymbols.Contains(sym))
             {
                 continue;
             }
 
-            if (running.PositionQuantity > 0m)
+            var started = idle.LastRunningStartedAtUtc ?? idle.CreatedAtUtc;
+            if (now - started >= IdleSlotReleaseWindow)
+            {
+                idle.State = BotState.Stopped;
+                idle.LastExecutionError =
+                    "AutoTrader: slot liberado (0 trades en 48h+, fuera del top del analista).";
+                idle.UpdatedAtUtc = now;
+                idle.OutOfTopCycles = 0;
+            }
+        }
+
+        foreach (var running in existingAutoBots.Where(x => x.State == BotState.Running))
+        {
+            if (running.AutoResumeBlocked || running.PositionQuantity > 0m)
             {
                 continue;
             }
 
             var runningSymbol = running.Symbols.FirstOrDefault() ?? string.Empty;
-            var activeAge = now - running.UpdatedAtUtc;
+            var activeAge = now - (running.LastRunningStartedAtUtc ?? running.CreatedAtUtc);
             if (!string.IsNullOrWhiteSpace(runningSymbol) &&
                 !targetSymbols.Contains(runningSymbol) &&
                 activeAge >= minActiveBeforePause)
@@ -127,8 +149,8 @@ public sealed class AutoTraderService(
             }
         }
 
-        var runningAutoBots = existingAutoBots.Count(x => x.State == BotState.Running);
-        var capacity = Math.Max(0, maxAutoBots - runningAutoBots);
+        var effectiveRunning = FleetCapacityHelper.CountEffectiveRunning(existingAutoBots, now, lastTradeByBot);
+        var capacity = Math.Max(0, maxAutoBots - effectiveRunning);
 
         var createdCount = 0;
         foreach (var candidate in target)
@@ -151,7 +173,6 @@ public sealed class AutoTraderService(
                 break;
             }
 
-            // SL algo mas ajustado y TP mayor (mejor R:R frente a perdidas medias grandes).
             var (sl, tp) = candidate.SuggestedStrategy switch
             {
                 StrategyType.Momentum => (1.85m, 5.2m),
@@ -164,7 +185,8 @@ public sealed class AutoTraderService(
                             x.PositionQuantity <= 0m &&
                             !x.AutoResumeBlocked &&
                             x.Symbols.Contains(candidate.Symbol))
-                .OrderByDescending(x => x.UpdatedAtUtc)
+                .OrderByDescending(x => x.RealizedPnlUsdt)
+                .ThenByDescending(x => x.UpdatedAtUtc)
                 .FirstOrDefault();
 
             if (recyclable is not null)
@@ -275,14 +297,10 @@ public sealed class AutoTraderService(
             }
 
             var wins = group.Count(x => x.RealizedPnlUsdt > 0m);
-            var winRate = wins * 1m / count; // 0..1
+            var winRate = wins * 1m / count;
             var net = group.Sum(x => x.RealizedPnlUsdt);
             var bias = (winRate - 0.5m) * 1.4m;
-            if (winRate < 0.45m)
-            {
-                bias -= 0.22m;
-            }
-
+            if (winRate < 0.45m) bias -= 0.22m;
             if (net > 0m) bias += 0.15m;
             if (net < 0m) bias -= 0.45m;
             map[group.Key] = Math.Clamp(decimal.Round(bias, 4), -1.2m, 1.2m);
@@ -291,9 +309,6 @@ public sealed class AutoTraderService(
         return map;
     }
 
-    /// <summary>
-    /// Simbolos con ventas SELL recientes de mala calidad: no abrir nuevos AutoPilot ni mantener running sin posicion.
-    /// </summary>
     private async Task<HashSet<string>> BuildSymbolQuarantineSetAsync(DateTime nowUtc)
     {
         var fromUtc = nowUtc.AddDays(-SymbolQuarantineLookbackDays);
@@ -355,7 +370,6 @@ public sealed class AutoTraderService(
         return configuredReactivate;
     }
 
-    /// <summary>Parada por perdidas, limite diario o edge negativo: esperar mas antes de reutilizar el slot AutoPilot.</summary>
     private static bool IsRiskDrivenRecycleStop(TradingBot bot)
     {
         if (IsOperationalRecycleStop(bot.LastExecutionError))
@@ -384,7 +398,6 @@ public sealed class AutoTraderService(
         return false;
     }
 
-    /// <summary>Paradas por inactividad del supervisor o rebalanceo (no riesgo de trade): reciclar rapido.</summary>
     private static bool IsOperationalRecycleStop(string? lastError)
     {
         if (string.IsNullOrWhiteSpace(lastError))
@@ -398,12 +411,18 @@ public sealed class AutoTraderService(
             return true;
         }
 
+        if (lastError.Contains("slot liberado", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
         if (!lastError.Contains("AutoTrader:", StringComparison.OrdinalIgnoreCase))
         {
             return false;
         }
 
         return lastError.Contains("rebalanceo", StringComparison.OrdinalIgnoreCase) ||
-               lastError.Contains("cuarentena", StringComparison.OrdinalIgnoreCase);
+               lastError.Contains("cuarentena", StringComparison.OrdinalIgnoreCase) ||
+               lastError.Contains("slot liberado", StringComparison.OrdinalIgnoreCase);
     }
 }

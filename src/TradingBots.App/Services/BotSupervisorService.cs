@@ -25,6 +25,7 @@ public sealed class BotSupervisorService(
 
         var inactiveMinutes = Math.Clamp(settings.SupervisorInactiveMinutes <= 0 ? 180 : settings.SupervisorInactiveMinutes, 60, 300);
         var inactiveWindow = TimeSpan.FromMinutes(inactiveMinutes);
+        var neverTradedStop = TimeSpan.FromHours(Math.Clamp(settings.NeverTradedStopHours <= 0 ? 36 : settings.NeverTradedStopHours, 12, 168));
         var now = DateTime.UtcNow;
         var recentAdvisorBuys = await BuildRecentBuySymbolsAsync(now);
         var candidates = await dbContext.Bots
@@ -51,24 +52,35 @@ public sealed class BotSupervisorService(
                 continue;
             }
 
-            // No detener bots que aun no han ejecutado ninguna operacion: suelen estar
-            // esperando senal (filtros estrictos) y el supervisor creaba un ciclo sin trades.
+            var sym = bot.Symbols.FirstOrDefault() ?? string.Empty;
+
             if (!lastTradeByBot.ContainsKey(bot.Id))
             {
+                var started = bot.LastRunningStartedAtUtc ?? bot.CreatedAtUtc;
+                if (now - started < neverTradedStop)
+                {
+                    continue;
+                }
+
+                if (!string.IsNullOrWhiteSpace(sym) && recentAdvisorBuys.Contains(sym))
+                {
+                    continue;
+                }
+
+                bot.State = BotState.Stopped;
+                bot.LastExecutionError =
+                    $"Supervisor: bot auto detenido por {neverTradedStop.TotalHours:0}h sin ningun trade (liberando slot).";
+                bot.UpdatedAtUtc = now;
+                stopped++;
                 continue;
             }
 
-            var sym = bot.Symbols.FirstOrDefault() ?? string.Empty;
-            if (!string.IsNullOrWhiteSpace(sym) &&
-                recentAdvisorBuys.Contains(sym))
+            if (!string.IsNullOrWhiteSpace(sym) && recentAdvisorBuys.Contains(sym))
             {
                 continue;
             }
 
-            var referenceUtc = lastTradeByBot.TryGetValue(bot.Id, out var lastTradeAtUtc)
-                ? lastTradeAtUtc
-                : bot.LastRunningStartedAtUtc ?? bot.CreatedAtUtc;
-
+            var referenceUtc = lastTradeByBot[bot.Id];
             if (now - referenceUtc < inactiveWindow)
             {
                 continue;
@@ -89,9 +101,6 @@ public sealed class BotSupervisorService(
         return stopped;
     }
 
-    /// <summary>
-    /// Simbolos con BUY en las ultimas sugerencias del analista (no parar por inactividad si sigue recomendado).
-    /// </summary>
     private async Task<HashSet<string>> BuildRecentBuySymbolsAsync(DateTime nowUtc)
     {
         var fresh = await advisorService.GetLatestSuggestionsAsync(48);

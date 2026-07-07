@@ -1,3 +1,11 @@
+# Blueprint Render: web + Postgres persistente (los datos sobreviven redeploys/restarts).
+# Despliegue: Render Dashboard -> New + -> Blueprint -> conectar repo.
+
+databases:
+  - name: tradingbots-db
+    plan: free
+    databaseName: tradingbots
+
 services:
   - type: web
     name: tradingbots-platform-poc
@@ -13,11 +21,13 @@ services:
       - key: PORT
         value: 5001
       - key: DB_PROVIDER
-        value: Sqlite
+        value: Postgres
       - key: Database__Provider
-        value: Sqlite
-      - key: ConnectionStrings__SqliteConnection
-        value: Data Source=tradingbots.db
+        value: Postgres
+      - key: DATABASE_URL
+        fromDatabase:
+          name: tradingbots-db
+          property: connectionString
       - key: Jwt__Issuer
         value: TradingBots.App
       - key: Jwt__Audience

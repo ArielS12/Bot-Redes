@@ -55,6 +55,7 @@ builder.Services.AddScoped<ITradeMlService, TradeMlService>();
 builder.Services.AddScoped<IMarketAdvisorService, MarketAdvisorService>();
 builder.Services.AddScoped<IAutoTraderService, AutoTraderService>();
 builder.Services.AddScoped<IBotSupervisorService, BotSupervisorService>();
+builder.Services.AddScoped<IPortfolioRiskService, PortfolioRiskService>();
 builder.Services.AddScoped<IControlAutotuneService, ControlAutotuneService>();
 builder.Services.AddScoped<IMarketHistoryService, MarketHistoryService>();
 builder.Services.AddScoped<IMarketStructureService, MarketStructureService>();
@@ -388,6 +389,30 @@ using (var scope = app.Services.CreateScope())
         BEGIN
             ALTER TABLE [BinanceSettings] ADD [MinStoppedAfterRiskStopMinutes] int NOT NULL CONSTRAINT DF_BinanceSettings_MinStoppedAfterRiskStopMinutes DEFAULT(45);
         END
+        IF COL_LENGTH('BinanceSettings', 'GlobalMaxDailyLossUsdt') IS NULL
+        BEGIN
+            ALTER TABLE [BinanceSettings] ADD [GlobalMaxDailyLossUsdt] decimal(18,2) NOT NULL CONSTRAINT DF_BinanceSettings_GlobalMaxDailyLossUsdt DEFAULT(15);
+        END
+        IF COL_LENGTH('BinanceSettings', 'BtcCrashGatePercent') IS NULL
+        BEGIN
+            ALTER TABLE [BinanceSettings] ADD [BtcCrashGatePercent] decimal(10,4) NOT NULL CONSTRAINT DF_BinanceSettings_BtcCrashGatePercent DEFAULT(3);
+        END
+        IF COL_LENGTH('BinanceSettings', 'MaxConcurrentAltPositions') IS NULL
+        BEGIN
+            ALTER TABLE [BinanceSettings] ADD [MaxConcurrentAltPositions] int NOT NULL CONSTRAINT DF_BinanceSettings_MaxConcurrentAltPositions DEFAULT(4);
+        END
+        IF COL_LENGTH('BinanceSettings', 'NeverTradedStopHours') IS NULL
+        BEGIN
+            ALTER TABLE [BinanceSettings] ADD [NeverTradedStopHours] int NOT NULL CONSTRAINT DF_BinanceSettings_NeverTradedStopHours DEFAULT(36);
+        END
+        IF COL_LENGTH('MlTradeObservations', 'IsShadow') IS NULL
+        BEGIN
+            ALTER TABLE [MlTradeObservations] ADD [IsShadow] bit NOT NULL CONSTRAINT DF_MlTradeObservations_IsShadow DEFAULT(0);
+        END
+        IF COL_LENGTH('MlTradeObservations', 'RejectReason') IS NULL
+        BEGIN
+            ALTER TABLE [MlTradeObservations] ADD [RejectReason] nvarchar(200) NULL;
+        END
         IF OBJECT_ID(N'[MlTradeObservations]', N'U') IS NULL
         BEGIN
             CREATE TABLE [MlTradeObservations](
@@ -434,6 +459,18 @@ using (var scope = app.Services.CreateScope())
         await db.Database.ExecuteSqlRawAsync(
             """ALTER TABLE "BinanceSettings" ADD COLUMN IF NOT EXISTS "MinStoppedAfterRiskStopMinutes" integer NOT NULL DEFAULT 45;""");
         await db.Database.ExecuteSqlRawAsync(
+            """ALTER TABLE "BinanceSettings" ADD COLUMN IF NOT EXISTS "GlobalMaxDailyLossUsdt" numeric(18,2) NOT NULL DEFAULT 15;""");
+        await db.Database.ExecuteSqlRawAsync(
+            """ALTER TABLE "BinanceSettings" ADD COLUMN IF NOT EXISTS "BtcCrashGatePercent" numeric(10,4) NOT NULL DEFAULT 3;""");
+        await db.Database.ExecuteSqlRawAsync(
+            """ALTER TABLE "BinanceSettings" ADD COLUMN IF NOT EXISTS "MaxConcurrentAltPositions" integer NOT NULL DEFAULT 4;""");
+        await db.Database.ExecuteSqlRawAsync(
+            """ALTER TABLE "BinanceSettings" ADD COLUMN IF NOT EXISTS "NeverTradedStopHours" integer NOT NULL DEFAULT 36;""");
+        await db.Database.ExecuteSqlRawAsync(
+            """ALTER TABLE "MlTradeObservations" ADD COLUMN IF NOT EXISTS "IsShadow" boolean NOT NULL DEFAULT FALSE;""");
+        await db.Database.ExecuteSqlRawAsync(
+            """ALTER TABLE "MlTradeObservations" ADD COLUMN IF NOT EXISTS "RejectReason" varchar(200) NULL;""");
+        await db.Database.ExecuteSqlRawAsync(
             """ALTER TABLE "Bots" ADD COLUMN IF NOT EXISTS "MlRoundTripRealizedUsdt" numeric(18,4) NOT NULL DEFAULT 0;""");
         await db.Database.ExecuteSqlRawAsync(
             """ALTER TABLE "MlTradeObservations" ALTER COLUMN "IsWin" DROP NOT NULL;""");
@@ -466,13 +503,24 @@ using (var scope = app.Services.CreateScope())
 
     if (db.Database.IsSqlite())
     {
-        try
+        foreach (var sql in new[]
+                 {
+                     """ALTER TABLE BinanceSettings ADD COLUMN MinStoppedAfterRiskStopMinutes INTEGER NOT NULL DEFAULT 45;""",
+                     """ALTER TABLE BinanceSettings ADD COLUMN GlobalMaxDailyLossUsdt REAL NOT NULL DEFAULT 15;""",
+                     """ALTER TABLE BinanceSettings ADD COLUMN BtcCrashGatePercent REAL NOT NULL DEFAULT 3;""",
+                     """ALTER TABLE BinanceSettings ADD COLUMN MaxConcurrentAltPositions INTEGER NOT NULL DEFAULT 4;""",
+                     """ALTER TABLE BinanceSettings ADD COLUMN NeverTradedStopHours INTEGER NOT NULL DEFAULT 36;""",
+                     """ALTER TABLE MlTradeObservations ADD COLUMN IsShadow INTEGER NOT NULL DEFAULT 0;""",
+                     """ALTER TABLE MlTradeObservations ADD COLUMN RejectReason TEXT NULL;"""
+                 })
         {
-            await db.Database.ExecuteSqlRawAsync(
-                """ALTER TABLE BinanceSettings ADD COLUMN MinStoppedAfterRiskStopMinutes INTEGER NOT NULL DEFAULT 45;""");
-        }
-        catch (SqliteException ex) when (ex.Message.Contains("duplicate column", StringComparison.OrdinalIgnoreCase))
-        {
+            try
+            {
+                await db.Database.ExecuteSqlRawAsync(sql);
+            }
+            catch (SqliteException ex) when (ex.Message.Contains("duplicate column", StringComparison.OrdinalIgnoreCase))
+            {
+            }
         }
     }
 

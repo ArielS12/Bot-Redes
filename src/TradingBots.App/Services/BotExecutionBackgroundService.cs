@@ -29,6 +29,10 @@ public sealed class BotExecutionBackgroundService(
                 {
                     symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT"];
                 }
+                else if (!symbols.Contains("BTCUSDT", StringComparer.OrdinalIgnoreCase))
+                {
+                    symbols.Add("BTCUSDT");
+                }
                 var marketData = await marketService.GetMarketOverviewAsync(symbols);
                 await botService.TickBotsAsync(marketData.ToDictionary(x => x.Symbol, x => x));
                 var fullMarketData = await marketService.GetMarketOverviewAsync(["*"]);

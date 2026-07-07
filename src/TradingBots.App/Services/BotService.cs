@@ -26,6 +26,7 @@ public sealed class BotService(
     IBinanceTradeExecutionService tradeExecutionService,
     IBinanceSettingsService settingsService,
     ITradeMlService tradeMlService,
+    IPortfolioRiskService portfolioRiskService,
     IStrategySignalRegistry strategySignals,
     IMarketHistoryService marketHistory,
     IMarketStructureService marketStructure,
@@ -33,8 +34,6 @@ public sealed class BotService(
 {
     /// <summary>Mínimo de notional por orden de compra (coherente con filtros típicos MIN_NOTIONAL en Binance).</summary>
     private const decimal MinQuoteOrderUsdt = 10m;
-    private const decimal MinQuoteVolume24hUsdt = 750_000m;
-    private const decimal MinRelativeVolume = 0.45m;
     private const decimal BaseRiskPercentPerTrade = 0.50m;
     private const int ExecutionFailureCircuitThreshold = 3;
     private static readonly TimeSpan ExecutionFailureCircuitDuration = TimeSpan.FromMinutes(20);
@@ -365,7 +364,7 @@ public sealed class BotService(
                     regimeBySymbol.TryGetValue(x.Symbol, out var regime);
                     return signals.ShouldBuy(x.Snapshot) &&
                            signals.PassesMultiTimeframeTrend(tf5, tf15) &&
-                           PassesLiquidityAndVolume(marketSnapshot[x.Symbol], x.Snapshot) &&
+                           EntryFilters.PassesLiquidityAndVolume(x.Symbol, marketSnapshot[x.Symbol], x.Snapshot) &&
                            signals.PassesShortRegimeFilter(x.Snapshot, marketSnapshot[x.Symbol]) &&
                            signals.PassesLongTermRegime(regime) &&
                            PassesMarketStructureForBuy(structureBySymbol.GetValueOrDefault(x.Symbol));
@@ -375,13 +374,19 @@ public sealed class BotService(
             var buySignal = buyCandidate is not null;
             var activeTechnical = technicalBySymbol.TryGetValue(activeSymbol, out var t) ? t : null;
             var sellSignal = activeTechnical is not null && signals.ShouldSell(activeTechnical);
+            var effectiveStopPct = activeTechnical is not null
+                ? ComputeEffectiveStopLossPercent(bot, activeTechnical)
+                : bot.StopLossPercent;
             var takeProfitHit = bot.PositionQuantity > 0 && bot.AverageEntryPrice > 0 &&
                                 ((activePrice - bot.AverageEntryPrice) / bot.AverageEntryPrice) * 100m >= bot.TakeProfitPercent;
             var stopLossHit = bot.PositionQuantity > 0 && bot.AverageEntryPrice > 0 &&
-                              ((activePrice - bot.AverageEntryPrice) / bot.AverageEntryPrice) * 100m <= -bot.StopLossPercent;
+                              ((activePrice - bot.AverageEntryPrice) / bot.AverageEntryPrice) * 100m <= -effectiveStopPct;
             var pnlPct = bot.PositionQuantity > 0m && bot.AverageEntryPrice > 0m
                 ? ((activePrice - bot.AverageEntryPrice) / bot.AverageEntryPrice) * 100m
                 : 0m;
+            var progressToTp = bot.TakeProfitPercent > 0m ? pnlPct / bot.TakeProfitPercent : 0m;
+            var breakevenArmed = progressToTp >= 0.30m && bot.PositionQuantity > 0m;
+            var breakevenStopHit = breakevenArmed && activePrice < bot.AverageEntryPrice;
             var trailingArmed = pnlPct >= bot.TrailingActivationPercent && bot.PeakPriceSinceEntry > 0m;
             var trailingStopHit = trailingArmed &&
                                   activePrice <= bot.PeakPriceSinceEntry * (1m - (bot.TrailingStopPercent / 100m));
@@ -420,6 +425,20 @@ public sealed class BotService(
                     bot.LastExecutionError = $"Circuit breaker activo para {symbol}. Reintento diferido.";
                     continue;
                 }
+
+                var portfolioVerdict = await portfolioRiskService.EvaluateNewBuyAsync(symbol, marketSnapshot);
+                if (!portfolioVerdict.Allowed)
+                {
+                    bot.LastExecutionError = portfolioVerdict.Reason;
+                    if (mlEnabled && buyCandidate.Snapshot is not null)
+                    {
+                        await tradeMlService.RecordShadowSignalAsync(
+                            bot.Id, symbol, bot.StrategyType, buyCandidate.Snapshot.LastPrice,
+                            buyCandidate.Snapshot, marketSnapshot[symbol], portfolioVerdict.Reason, 0m);
+                    }
+                    continue;
+                }
+
                 var entryPrice = buyCandidate.Snapshot.LastPrice;
                 var quoteToUse = ComputeRiskSizedQuote(bot, remainingBudget, buyCandidate.Snapshot);
                 if (quoteToUse < MinQuoteOrderUsdt)
@@ -449,6 +468,10 @@ public sealed class BotService(
                                 CreatedAtUtc = DateTime.UtcNow
                             });
                             bot.LastExecutionError = $"ML filtro: p(win) {mlEval.WinProbability:0.000} < {mlMinProb:0.000}";
+                            await tradeMlService.RecordShadowSignalAsync(
+                                bot.Id, symbol, bot.StrategyType, entryPrice,
+                                buyCandidate.Snapshot, marketSnapshot[symbol],
+                                bot.LastExecutionError, mlEval.WinProbability);
                             continue;
                         }
                     }
@@ -543,8 +566,8 @@ public sealed class BotService(
             }
             else if (bot.PositionQuantity > 0m)
             {
-                // Salidas de riesgo (SL/time-stop/contexto roto) deben poder ejecutarse incluso sin profit.
-                var riskExit = stopLossHit || timeStopHit || contextDefensiveExitHit;
+                // Salidas de riesgo (SL/time-stop/contexto roto/breakeven) deben poder ejecutarse incluso sin profit.
+                var riskExit = stopLossHit || breakevenStopHit || timeStopHit || contextDefensiveExitHit;
                 // Salidas tacticas (senal/TP/trailing) se mantienen condicionadas a profit.
                 var tacticalExit = profitableNow && (sellSignal || takeProfitHit || trailingStopHit || pnlPct >= bot.TakeProfit2Percent);
                 var requestFullExit = riskExit || tacticalExit;
@@ -683,9 +706,9 @@ public sealed class BotService(
                 bot.LastExecutionError = "Bot pausado por perdida diaria maxima (AutoPilot).";
                 logger.LogWarning("Bot {BotName} detenido por max daily loss.", bot.Name);
             }
-
-            bot.UpdatedAtUtc = DateTime.UtcNow;
         }
+
+        await tradeMlService.ResolveShadowSignalsAsync(marketSnapshot);
 
         // Retencion simple para no crecer indefinidamente.
         var threshold = DateTime.UtcNow.AddDays(-30);
@@ -829,7 +852,7 @@ public sealed class BotService(
                     technical15mBySymbol.TryGetValue(x.Symbol, out var tf15) &&
                     signals.ShouldBuy(x.Snapshot) &&
                     signals.PassesMultiTimeframeTrend(tf5, tf15) &&
-                    PassesLiquidityAndVolume(marketSnapshot[x.Symbol], x.Snapshot) &&
+                    EntryFilters.PassesLiquidityAndVolume(x.Symbol, marketSnapshot[x.Symbol], x.Snapshot) &&
                     signals.PassesShortRegimeFilter(x.Snapshot, marketSnapshot[x.Symbol]) &&
                     signals.PassesLongTermRegime(regimeBySymbol.GetValueOrDefault(x.Symbol)) &&
                     PassesMarketStructureForBuy(structureBySymbol.GetValueOrDefault(x.Symbol)))
@@ -888,13 +911,15 @@ public sealed class BotService(
                     {
                         reason = "Sin ticker de mercado para el simbolo activo.";
                     }
-                    else if (m.QuoteVolume24h < MinQuoteVolume24hUsdt)
+                    else if (m.QuoteVolume24h < EntryFilters.GetMinQuoteVolume24h(activeSymbol))
                     {
-                        reason = "Bloqueado por liquidez: volumen 24h insuficiente.";
+                        reason = EntryFilters.DescribeLiquidityBlock(activeSymbol, m, activeTechnical)
+                                 ?? "Bloqueado por liquidez: volumen 24h insuficiente.";
                     }
-                    else if (activeTechnical.RelativeVolume < MinRelativeVolume)
+                    else if (activeTechnical.RelativeVolume < EntryFilters.GetMinRelativeVolume(activeSymbol))
                     {
-                        reason = "Bloqueado por volumen relativo bajo.";
+                        reason = EntryFilters.DescribeLiquidityBlock(activeSymbol, m, activeTechnical)
+                                 ?? "Bloqueado por volumen relativo bajo.";
                     }
                     else if (!technical5mBySymbol.TryGetValue(activeSymbol, out var tf5) ||
                              !technical15mBySymbol.TryGetValue(activeSymbol, out var tf15))
@@ -962,8 +987,13 @@ public sealed class BotService(
         return result;
     }
 
-    private static bool PassesLiquidityAndVolume(MarketTicker ticker, TechnicalMarketSnapshot technical) =>
-        ticker.QuoteVolume24h >= MinQuoteVolume24hUsdt && technical.RelativeVolume >= MinRelativeVolume;
+    private static decimal ComputeEffectiveStopLossPercent(TradingBot bot, TechnicalMarketSnapshot snapshot)
+    {
+        var atrBased = snapshot.AtrPercent * 1.5m;
+        var floor = 1.2m;
+        var ceiling = Math.Max(floor, bot.StopLossPercent);
+        return Math.Clamp(Math.Max(atrBased, floor), floor, ceiling);
+    }
 
     private static bool PassesMarketStructureForBuy(MarketStructureSnapshot? structure) =>
         DescribeMarketStructureBuyBlock(structure) is null;

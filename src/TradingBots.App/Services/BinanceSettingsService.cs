@@ -65,6 +65,10 @@ public sealed class BinanceSettingsService(AppDbContext dbContext) : IBinanceSet
         settings.MlShadowMode = request.MlShadowMode;
         settings.MlMinWinProbability = decimal.Clamp(request.MlMinWinProbability, 0.50m, 0.90m);
         settings.MlMinSamples = Math.Clamp(request.MlMinSamples, 30, 5000);
+        settings.GlobalMaxDailyLossUsdt = request.GlobalMaxDailyLossUsdt <= 0m ? 15m : decimal.Clamp(request.GlobalMaxDailyLossUsdt, 5m, 500m);
+        settings.BtcCrashGatePercent = request.BtcCrashGatePercent <= 0m ? 3m : decimal.Clamp(request.BtcCrashGatePercent, 1m, 15m);
+        settings.MaxConcurrentAltPositions = Math.Clamp(request.MaxConcurrentAltPositions <= 0 ? 4 : request.MaxConcurrentAltPositions, 1, 20);
+        settings.NeverTradedStopHours = Math.Clamp(request.NeverTradedStopHours <= 0 ? 36 : request.NeverTradedStopHours, 12, 168);
         settings.LiveEnabledByChecklist = request.LiveEnabledByChecklist && settings.LiveEnabledByChecklist;
         settings.ApiKey = request.ApiKey.Trim();
         var newSecret = request.ApiSecret.Trim();
@@ -116,6 +120,10 @@ public sealed class BinanceSettingsService(AppDbContext dbContext) : IBinanceSet
         MlShadowMode = settings.MlShadowMode,
         MlMinWinProbability = settings.MlMinWinProbability <= 0m ? 0.55m : decimal.Clamp(settings.MlMinWinProbability, 0.50m, 0.90m),
         MlMinSamples = settings.MlMinSamples <= 0 ? 80 : Math.Clamp(settings.MlMinSamples, 30, 5000),
+        GlobalMaxDailyLossUsdt = settings.GlobalMaxDailyLossUsdt <= 0m ? 15m : settings.GlobalMaxDailyLossUsdt,
+        BtcCrashGatePercent = settings.BtcCrashGatePercent <= 0m ? 3m : settings.BtcCrashGatePercent,
+        MaxConcurrentAltPositions = settings.MaxConcurrentAltPositions <= 0 ? 4 : settings.MaxConcurrentAltPositions,
+        NeverTradedStopHours = settings.NeverTradedStopHours <= 0 ? 36 : settings.NeverTradedStopHours,
         LastAutoControlTuneUtc = settings.LastAutoControlTuneUtc,
         ApiKey = settings.ApiKey,
         ApiSecretMasked = string.IsNullOrWhiteSpace(settings.ApiSecret)

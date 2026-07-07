@@ -259,6 +259,14 @@ public sealed class BinanceConnectionSettings
     public bool MlShadowMode { get; set; } = true;
     public decimal MlMinWinProbability { get; set; } = 0.55m;
     public int MlMinSamples { get; set; } = 80;
+    /// <summary>Perdida maxima agregada del dia (UTC) antes de bloquear nuevas entradas.</summary>
+    public decimal GlobalMaxDailyLossUsdt { get; set; } = 15m;
+    /// <summary>Bloquea nuevos LONG en alts si BTC cae mas de este % en 24h.</summary>
+    public decimal BtcCrashGatePercent { get; set; } = 3m;
+    /// <summary>Max posiciones abiertas simultaneas en pares no-major.</summary>
+    public int MaxConcurrentAltPositions { get; set; } = 4;
+    /// <summary>Horas sin ningun trade antes de que el supervisor detenga un bot auto.</summary>
+    public int NeverTradedStopHours { get; set; } = 36;
     public DateTime? LastAutoControlTuneUtc { get; set; }
     public string ApiKey { get; set; } = string.Empty;
     public string ApiSecret { get; set; } = string.Empty;
@@ -284,6 +292,10 @@ public sealed class UpdateBinanceSettingsRequest
     public bool MlShadowMode { get; set; } = true;
     public decimal MlMinWinProbability { get; set; } = 0.55m;
     public int MlMinSamples { get; set; } = 80;
+    public decimal GlobalMaxDailyLossUsdt { get; set; } = 15m;
+    public decimal BtcCrashGatePercent { get; set; } = 3m;
+    public int MaxConcurrentAltPositions { get; set; } = 4;
+    public int NeverTradedStopHours { get; set; } = 36;
     public string ApiKey { get; set; } = string.Empty;
     public string ApiSecret { get; set; } = string.Empty;
 }
@@ -307,6 +319,10 @@ public sealed class BinanceSettingsView
     public bool MlShadowMode { get; set; }
     public decimal MlMinWinProbability { get; set; }
     public int MlMinSamples { get; set; }
+    public decimal GlobalMaxDailyLossUsdt { get; set; }
+    public decimal BtcCrashGatePercent { get; set; }
+    public int MaxConcurrentAltPositions { get; set; }
+    public int NeverTradedStopHours { get; set; }
     public DateTime? LastAutoControlTuneUtc { get; set; }
     public string ApiKey { get; set; } = string.Empty;
     public string ApiSecretMasked { get; set; } = string.Empty;
@@ -455,6 +471,9 @@ public sealed class MlTradeObservation
     public DateTime? ClosedAtUtc { get; set; }
     public decimal? RealizedPnlUsdt { get; set; }
     public bool? IsWin { get; set; }
+    /// <summary>Señal registrada en shadow mode (rechazada o no ejecutada) para entrenamiento ML.</summary>
+    public bool IsShadow { get; set; }
+    public string? RejectReason { get; set; }
 }
 
 public sealed class MlRuntimeSummary

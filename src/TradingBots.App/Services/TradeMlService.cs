@@ -31,6 +31,21 @@ public interface ITradeMlService
     /// Ejecuta el mismo pipeline de entrenamiento que una evaluacion BUY real y devuelve estado en esta peticion (util para diagnosticos en runtime).
     /// </summary>
     Task<MlDiagnosticsView> GetDiagnosticsAsync(BinanceConnectionSettings settings, CancellationToken ct = default);
+
+    Task RecordShadowSignalAsync(
+        Guid botId,
+        string symbol,
+        StrategyType strategy,
+        decimal entryPrice,
+        TechnicalMarketSnapshot snapshot,
+        MarketTicker ticker,
+        string rejectReason,
+        decimal predictedWinProbability,
+        CancellationToken ct = default);
+
+    Task<int> ResolveShadowSignalsAsync(
+        IReadOnlyDictionary<string, MarketTicker> marketSnapshot,
+        CancellationToken ct = default);
 }
 
 public sealed class MlBuyEvaluation
@@ -43,6 +58,11 @@ public sealed class MlBuyEvaluation
 
 public sealed class TradeMlService(AppDbContext dbContext) : ITradeMlService
 {
+    private const decimal ShadowTpPercent = 1.5m;
+    private const decimal ShadowSlPercent = 1.85m;
+    private static readonly TimeSpan ShadowMinAge = TimeSpan.FromMinutes(20);
+    private static readonly TimeSpan ShadowMaxAge = TimeSpan.FromMinutes(180);
+
     private DateTime? _lastTrainedUtc;
     private double[]? _weights;
     private int _trainedSamples;
@@ -97,7 +117,7 @@ public sealed class TradeMlService(AppDbContext dbContext) : ITradeMlService
         CancellationToken ct = default)
     {
         var hasOpen = await dbContext.MlTradeObservations
-            .AnyAsync(x => x.BotId == botId && x.Symbol == symbol && x.ClosedAtUtc == null, ct);
+            .AnyAsync(x => x.BotId == botId && x.Symbol == symbol && x.ClosedAtUtc == null && !x.IsShadow, ct);
         if (hasOpen)
         {
             return;
@@ -125,7 +145,7 @@ public sealed class TradeMlService(AppDbContext dbContext) : ITradeMlService
     public async Task RecordExitAsync(Guid botId, string symbol, decimal realizedPnlUsdt, CancellationToken ct = default)
     {
         var open = await dbContext.MlTradeObservations
-            .Where(x => x.BotId == botId && x.Symbol == symbol && x.ClosedAtUtc == null)
+            .Where(x => x.BotId == botId && x.Symbol == symbol && x.ClosedAtUtc == null && !x.IsShadow)
             .OrderByDescending(x => x.EntryAtUtc)
             .FirstOrDefaultAsync(ct);
         if (open is null)
@@ -138,6 +158,114 @@ public sealed class TradeMlService(AppDbContext dbContext) : ITradeMlService
         open.IsWin = realizedPnlUsdt > 0m;
         await dbContext.SaveChangesAsync(ct);
     }
+
+    public async Task RecordShadowSignalAsync(
+        Guid botId,
+        string symbol,
+        StrategyType strategy,
+        decimal entryPrice,
+        TechnicalMarketSnapshot snapshot,
+        MarketTicker ticker,
+        string rejectReason,
+        decimal predictedWinProbability,
+        CancellationToken ct = default)
+    {
+        var cutoff = DateTime.UtcNow.AddMinutes(-15);
+        var recent = await dbContext.MlTradeObservations
+            .AnyAsync(x =>
+                x.IsShadow &&
+                x.BotId == botId &&
+                x.Symbol == symbol &&
+                x.ClosedAtUtc == null &&
+                x.EntryAtUtc >= cutoff, ct);
+        if (recent)
+        {
+            return;
+        }
+
+        dbContext.MlTradeObservations.Add(new MlTradeObservation
+        {
+            BotId = botId,
+            Symbol = symbol,
+            StrategyType = strategy,
+            EntryAtUtc = DateTime.UtcNow,
+            EntryPrice = entryPrice,
+            PredictedWinProbability = decimal.Round(predictedWinProbability, 6),
+            EmaGapPct = decimal.Round(NormEmaGapPct(snapshot), 6),
+            Rsi14 = decimal.Round(snapshot.Rsi14, 6),
+            MacdHistogram = decimal.Round(snapshot.MacdHistogram, 8),
+            RelativeVolume = decimal.Round(snapshot.RelativeVolume, 6),
+            PriceChangePercent24h = decimal.Round(ticker.PriceChangePercent24h, 6),
+            QuoteVolume24h = decimal.Round(ticker.QuoteVolume24h, 2),
+            IsShadow = true,
+            RejectReason = rejectReason.Length > 200 ? rejectReason[..200] : rejectReason
+        });
+        await dbContext.SaveChangesAsync(ct);
+    }
+
+    public async Task<int> ResolveShadowSignalsAsync(
+        IReadOnlyDictionary<string, MarketTicker> marketSnapshot,
+        CancellationToken ct = default)
+    {
+        var now = DateTime.UtcNow;
+        var open = await dbContext.MlTradeObservations
+            .Where(x => x.IsShadow && x.ClosedAtUtc == null && x.EntryAtUtc <= now - ShadowMinAge)
+            .ToListAsync(ct);
+        if (open.Count == 0)
+        {
+            return 0;
+        }
+
+        var resolved = 0;
+        foreach (var row in open)
+        {
+            if (!marketSnapshot.TryGetValue(row.Symbol, out var ticker) || ticker.LastPrice <= 0m)
+            {
+                continue;
+            }
+
+            var age = now - row.EntryAtUtc;
+            var movePct = row.EntryPrice > 0m
+                ? (ticker.LastPrice - row.EntryPrice) / row.EntryPrice * 100m
+                : 0m;
+
+            decimal hypotheticalPnl;
+            bool? isWin;
+            if (movePct >= ShadowTpPercent)
+            {
+                hypotheticalPnl = decimal.Round(MinQuoteOrderUsdt * ShadowTpPercent / 100m, 4);
+                isWin = true;
+            }
+            else if (movePct <= -ShadowSlPercent)
+            {
+                hypotheticalPnl = decimal.Round(-MinQuoteOrderUsdt * ShadowSlPercent / 100m, 4);
+                isWin = false;
+            }
+            else if (age >= ShadowMaxAge)
+            {
+                hypotheticalPnl = decimal.Round(MinQuoteOrderUsdt * movePct / 100m, 4);
+                isWin = hypotheticalPnl > 0m;
+            }
+            else
+            {
+                continue;
+            }
+
+            row.ClosedAtUtc = now;
+            row.RealizedPnlUsdt = hypotheticalPnl;
+            row.IsWin = isWin;
+            resolved++;
+        }
+
+        if (resolved > 0)
+        {
+            await dbContext.SaveChangesAsync(ct);
+        }
+
+        return resolved;
+    }
+
+    private const decimal MinQuoteOrderUsdt = 10m;
 
     public async Task<MlRuntimeSummary> GetSummaryAsync(BinanceConnectionSettings settings, CancellationToken ct = default)
     {
