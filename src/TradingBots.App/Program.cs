@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Net;
 // Modo publico: JWT deshabilitado (descomentar para volver a exigir login en API).
 // using System.Text;
 // using Microsoft.AspNetCore.Authentication.JwtBearer;
@@ -52,8 +53,28 @@ builder.Services.AddDbContext<AppDbContext>(options =>
         options.UseSqlServer(builder.Configuration.GetConnectionString("DefaultConnection"));
     }
 });
-builder.Services.AddHttpClient<IBinanceMarketService, BinanceMarketService>();
-builder.Services.AddHttpClient<IBinanceTradeExecutionService, BinanceTradeExecutionService>();
+builder.Services.AddHttpClient<IBinanceMarketService, BinanceMarketService>()
+    .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler
+    {
+        AutomaticDecompression = DecompressionMethods.All,
+        PooledConnectionLifetime = TimeSpan.FromMinutes(5)
+    })
+    .ConfigureHttpClient(client =>
+    {
+        client.Timeout = TimeSpan.FromSeconds(60);
+        client.DefaultRequestHeaders.UserAgent.ParseAdd("TradingBotsApp/1.0");
+    });
+builder.Services.AddHttpClient<IBinanceTradeExecutionService, BinanceTradeExecutionService>()
+    .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler
+    {
+        AutomaticDecompression = DecompressionMethods.All,
+        PooledConnectionLifetime = TimeSpan.FromMinutes(5)
+    })
+    .ConfigureHttpClient(client =>
+    {
+        client.Timeout = TimeSpan.FromSeconds(60);
+        client.DefaultRequestHeaders.UserAgent.ParseAdd("TradingBotsApp/1.0");
+    });
 builder.Services.AddScoped<IBotService, BotService>();
 builder.Services.AddScoped<IAuthService, AuthService>();
 builder.Services.AddScoped<ClientAuthSession>();

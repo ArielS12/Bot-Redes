@@ -33,7 +33,7 @@ public sealed class BinanceTradeExecutionService(
     ILogger<BinanceTradeExecutionService> logger) : IBinanceTradeExecutionService
 {
     private string _lastExecutionError = string.Empty;
-    private const long DefaultRecvWindow = 5000;
+    private const long DefaultRecvWindow = 60_000;
     private long _timeOffsetMs;
     private DateTime? _lastTimeSyncUtc;
     private int _rateLimit429Count;
@@ -139,11 +139,19 @@ public sealed class BinanceTradeExecutionService(
         catch (Exception ex)
         {
             logger.LogWarning(ex, "No se pudo leer resumen de cuenta Binance.");
+            var detail = ex.Message;
+            if (detail.Length > 220)
+            {
+                detail = detail[..220] + "...";
+            }
+
             return new BinanceAccountSummary
             {
                 Connected = false,
                 EnvironmentName = envName,
-                Message = "Error consultando cuenta. Verifica API Key, permisos y entorno."
+                Message = string.IsNullOrWhiteSpace(detail)
+                    ? "Error consultando cuenta. Verifica API Key, permisos y entorno."
+                    : $"Error consultando cuenta: {detail}"
             };
         }
     }
@@ -385,7 +393,12 @@ public sealed class BinanceTradeExecutionService(
         request.Headers.TryAddWithoutValidation("X-MBX-APIKEY", settings.ApiKey);
         var response = await SendWithRateLimitRetryAsync(request, ct);
         var body = await response.Content.ReadAsStringAsync(ct);
-        response.EnsureSuccessStatusCode();
+        if (!response.IsSuccessStatusCode)
+        {
+            throw new InvalidOperationException(
+                $"Binance account HTTP {(int)response.StatusCode}: {ExtractBinanceError(body)}");
+        }
+
         return JsonSerializer.Deserialize<AccountInfoResponse>(body, new JsonSerializerOptions
         {
             PropertyNameCaseInsensitive = true
@@ -439,6 +452,29 @@ public sealed class BinanceTradeExecutionService(
         }
 
         return decimal.Round(normalized, 8, MidpointRounding.ToZero);
+    }
+
+    private static string ExtractBinanceError(string body)
+    {
+        if (string.IsNullOrWhiteSpace(body))
+        {
+            return "sin cuerpo de respuesta";
+        }
+
+        try
+        {
+            using var doc = JsonDocument.Parse(body);
+            if (doc.RootElement.TryGetProperty("msg", out var msg))
+            {
+                var code = doc.RootElement.TryGetProperty("code", out var c) ? c.GetInt32() : 0;
+                return code == 0 ? msg.GetString() ?? body : $"{msg.GetString()} (code {code})";
+            }
+        }
+        catch
+        {
+        }
+
+        return body.Length > 180 ? body[..180] + "..." : body;
     }
 
     private static bool CanTradeReal(BinanceConnectionSettings settings) =>

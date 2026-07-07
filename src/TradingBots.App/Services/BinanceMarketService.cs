@@ -39,26 +39,34 @@ public sealed class BinanceMarketService(
         try
         {
             var settings = await settingsService.GetActiveSettingsAsync();
-            var endpoint = $"{settingsService.ResolveMarketBaseUrl(settings)}/api/v3/ticker/24hr";
-            var response = await GetWithRetryAsync(endpoint);
-            response.EnsureSuccessStatusCode();
-            var json = await response.Content.ReadAsStringAsync();
-            var all = JsonSerializer.Deserialize<List<BinanceTickerDto>>(json, JsonOptions) ?? [];
+            var baseUrl = settingsService.ResolveMarketBaseUrl(settings);
 
-            var filtered = includeAll
-                ? all
-                : all.Where(x => selected.Contains(x.Symbol)).ToList();
-
-            return filtered
-                .Select(x => new MarketTicker
+            if (!includeAll && selected.Count > 0)
+            {
+                var perSymbol = await FetchTickersPerSymbolAsync(baseUrl, selected);
+                if (perSymbol.Any(x => x.LastPrice > 0m))
                 {
-                    Symbol = x.Symbol,
-                    LastPrice = decimal.TryParse(x.LastPrice, NumberStyles.Any, CultureInfo.InvariantCulture, out var p) ? p : 0m,
-                    PriceChangePercent24h = decimal.TryParse(x.PriceChangePercent, NumberStyles.Any, CultureInfo.InvariantCulture, out var c) ? c : 0m,
-                    QuoteVolume24h = decimal.TryParse(x.QuoteVolume, NumberStyles.Any, CultureInfo.InvariantCulture, out var q) ? q : 0m
-                })
-                .OrderBy(x => x.Symbol)
-                .ToList();
+                    return perSymbol;
+                }
+            }
+
+            var tickers = await TryFetchAllTickersAsync(baseUrl);
+            if (tickers.Count == 0 &&
+                settings.Environment == BinanceEnvironment.Sandbox &&
+                !baseUrl.Contains("api.binance.com", StringComparison.OrdinalIgnoreCase))
+            {
+                logger.LogWarning("Testnet sin datos de mercado; usando api.binance.com solo para precios publicos.");
+                tickers = await TryFetchAllTickersAsync("https://api.binance.com");
+            }
+
+            if (tickers.Count == 0)
+            {
+                return selected.Select(s => new MarketTicker { Symbol = s }).ToList();
+            }
+
+            return includeAll
+                ? tickers
+                : tickers.Where(x => selected.Contains(x.Symbol)).OrderBy(x => x.Symbol).ToList();
         }
         catch (Exception ex)
         {
@@ -66,6 +74,51 @@ public sealed class BinanceMarketService(
             return selected.Select(s => new MarketTicker { Symbol = s }).ToList();
         }
     }
+
+    private async Task<List<MarketTicker>> FetchTickersPerSymbolAsync(string baseUrl, List<string> symbols)
+    {
+        var results = new List<MarketTicker>();
+        foreach (var symbol in symbols)
+        {
+            try
+            {
+                var endpoint = $"{baseUrl}/api/v3/ticker/24hr?symbol={Uri.EscapeDataString(symbol)}";
+                var response = await GetWithRetryAsync(endpoint);
+                response.EnsureSuccessStatusCode();
+                var json = await response.Content.ReadAsStringAsync();
+                var dto = JsonSerializer.Deserialize<BinanceTickerDto>(json, JsonOptions);
+                if (dto is not null)
+                {
+                    results.Add(MapTicker(dto));
+                }
+            }
+            catch (Exception ex)
+            {
+                logger.LogDebug(ex, "No se pudo leer ticker {Symbol} desde {BaseUrl}", symbol, baseUrl);
+                results.Add(new MarketTicker { Symbol = symbol });
+            }
+        }
+
+        return results;
+    }
+
+    private async Task<List<MarketTicker>> TryFetchAllTickersAsync(string baseUrl)
+    {
+        var endpoint = $"{baseUrl}/api/v3/ticker/24hr";
+        var response = await GetWithRetryAsync(endpoint);
+        response.EnsureSuccessStatusCode();
+        var json = await response.Content.ReadAsStringAsync();
+        var all = JsonSerializer.Deserialize<List<BinanceTickerDto>>(json, JsonOptions) ?? [];
+        return all.Select(MapTicker).OrderBy(x => x.Symbol).ToList();
+    }
+
+    private static MarketTicker MapTicker(BinanceTickerDto x) => new()
+    {
+        Symbol = x.Symbol,
+        LastPrice = decimal.TryParse(x.LastPrice, NumberStyles.Any, CultureInfo.InvariantCulture, out var p) ? p : 0m,
+        PriceChangePercent24h = decimal.TryParse(x.PriceChangePercent, NumberStyles.Any, CultureInfo.InvariantCulture, out var c) ? c : 0m,
+        QuoteVolume24h = decimal.TryParse(x.QuoteVolume, NumberStyles.Any, CultureInfo.InvariantCulture, out var q) ? q : 0m
+    };
 
     public async Task<Dictionary<string, TechnicalMarketSnapshot>> GetTechnicalSnapshotsAsync(IEnumerable<string> symbols, string interval = "1m", int limit = 120)
     {
