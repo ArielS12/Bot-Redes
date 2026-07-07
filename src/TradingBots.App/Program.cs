@@ -32,11 +32,19 @@ builder.Services.AddDbContext<AppDbContext>(options =>
     }
     else if (dbProvider.Equals("Postgres", StringComparison.OrdinalIgnoreCase) || dbProvider.Equals("PostgreSql", StringComparison.OrdinalIgnoreCase))
     {
-        var postgresConnection =
-            builder.Configuration.GetConnectionString("PostgresConnection")
-            ?? Environment.GetEnvironmentVariable("DATABASE_URL")
-            ?? builder.Configuration.GetConnectionString("DefaultConnection")
-            ?? throw new InvalidOperationException("Falta cadena de conexion Postgres.");
+        var postgresConnection = builder.Configuration.GetConnectionString("PostgresConnection");
+        if (string.IsNullOrWhiteSpace(postgresConnection))
+        {
+            postgresConnection = Environment.GetEnvironmentVariable("DATABASE_URL");
+        }
+        if (string.IsNullOrWhiteSpace(postgresConnection))
+        {
+            postgresConnection = builder.Configuration.GetConnectionString("DefaultConnection");
+        }
+        if (string.IsNullOrWhiteSpace(postgresConnection))
+        {
+            throw new InvalidOperationException("Falta cadena de conexion Postgres.");
+        }
         options.UseNpgsql(NormalizePostgresConnection(postgresConnection));
     }
     else
