@@ -11,7 +11,7 @@ public sealed class MomentumStrategySignal : IStrategySignalProvider
         technical.MacdLine > technical.MacdSignal &&
         MomentumMacdHistogramEntryOk(technical) &&
         technical.Rsi14 >= 50m &&
-        technical.Rsi14 <= 68m;
+        technical.Rsi14 <= 65m;
 
     public bool ShouldSell(TechnicalMarketSnapshot technical) =>
         technical.EmaFast < technical.EmaSlow ||
@@ -49,9 +49,9 @@ public sealed class MomentumStrategySignal : IStrategySignalProvider
             return $"Momentum 1m: RSI {t.Rsi14:0.#} bajo minimo de entrada (50).";
         }
 
-        if (t.Rsi14 > 68m)
+        if (t.Rsi14 > 65m)
         {
-            return $"Momentum 1m: RSI {t.Rsi14:0.#} sobre maximo de entrada (68).";
+            return $"Momentum 1m: RSI {t.Rsi14:0.#} sobre maximo de entrada (65).";
         }
 
         return "Condicion de entrada 1m no cumplida.";

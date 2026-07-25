@@ -245,7 +245,7 @@ public sealed class BinanceConnectionSettings
     public bool LiveSafetyConfirmed { get; set; }
     public bool LiveEnabledByChecklist { get; set; }
     public bool GlobalKillSwitch { get; set; } = true;
-    public int MaxAutoBots { get; set; } = 8;
+    public int MaxAutoBots { get; set; } = 12;
     public bool AutoControlTuningEnabled { get; set; } = true;
     public int SupervisorInactiveMinutes { get; set; } = 180;
     public int RebalanceOutOfTopCycles { get; set; } = 3;
@@ -281,7 +281,7 @@ public sealed class UpdateBinanceSettingsRequest
     public bool LiveSafetyConfirmed { get; set; }
     public bool LiveEnabledByChecklist { get; set; }
     public bool GlobalKillSwitch { get; set; } = true;
-    public int MaxAutoBots { get; set; } = 8;
+    public int MaxAutoBots { get; set; } = 12;
     public bool AutoControlTuningEnabled { get; set; } = true;
     public int SupervisorInactiveMinutes { get; set; } = 180;
     public int RebalanceOutOfTopCycles { get; set; } = 3;
@@ -429,6 +429,19 @@ public sealed class BotAnalyticsItem
     public string SolidityReason { get; set; } = string.Empty;
 }
 
+/// <summary>Expectancy neta post-fee agregada por estrategia (SELL cerrados).</summary>
+public sealed class StrategyExpectancyItem
+{
+    public string Strategy { get; set; } = string.Empty;
+    public int ClosedTrades { get; set; }
+    public decimal WinRatePercent { get; set; }
+    public decimal ProfitFactor { get; set; }
+    public decimal NetRealizedUsdt { get; set; }
+    public decimal ExpectancyUsdt { get; set; }
+    public decimal AvgWinUsdt { get; set; }
+    public decimal AvgLossUsdt { get; set; }
+}
+
 public sealed class SystemReadinessView
 {
     public bool AppHealthy { get; set; }
@@ -501,5 +514,8 @@ public sealed class MlDiagnosticsView
     public bool ModelReady { get; set; }
     public int ClosedRowsUsedForTraining { get; set; }
     public DateTime? LastTrainedUtc { get; set; }
+    public decimal PrecisionPercent { get; set; }
+    public decimal RecallPercent { get; set; }
+    public decimal BaselineWinRatePercent { get; set; }
     public string Note { get; set; } = string.Empty;
 }

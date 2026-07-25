@@ -80,7 +80,7 @@ builder.Services.AddScoped<IAuthService, AuthService>();
 builder.Services.AddScoped<ClientAuthSession>();
 builder.Services.AddScoped<UiLoadingState>();
 builder.Services.AddScoped<IBinanceSettingsService, BinanceSettingsService>();
-builder.Services.AddScoped<ITradeMlService, TradeMlService>();
+builder.Services.AddSingleton<ITradeMlService, TradeMlService>();
 builder.Services.AddScoped<IMarketAdvisorService, MarketAdvisorService>();
 builder.Services.AddScoped<IAutoTraderService, AutoTraderService>();
 builder.Services.AddScoped<IBotSupervisorService, BotSupervisorService>();
@@ -586,10 +586,35 @@ using (var scope = app.Services.CreateScope())
         db.BinanceSettings.Add(new BinanceConnectionSettings
         {
             IsEnabled = false,
-            Environment = BinanceEnvironment.Sandbox
+            Environment = BinanceEnvironment.Sandbox,
+            MaxAutoBots = 12
         });
         await db.SaveChangesAsync();
     }
+    else
+    {
+        // Quality-over-quantity: alinear flota a MaxAutoBots=12 (cap duro 15 en codigo).
+        await db.BinanceSettings
+            .Where(x => x.MaxAutoBots <= 0 || x.MaxAutoBots > 12)
+            .ExecuteUpdateAsync(s => s
+                .SetProperty(x => x.MaxAutoBots, 12)
+                .SetProperty(x => x.UpdatedAtUtc, DateTime.UtcNow));
+    }
+}
+
+// Consolidacion de flota al arranque (cap running, poda detenidos sin trades recientes).
+try
+{
+    using var maintenanceScope = app.Services.CreateScope();
+    var maintenance = maintenanceScope.ServiceProvider.GetRequiredService<IBotMaintenanceService>();
+    var fleet = await maintenance.ConsolidateFleetAsync();
+    app.Logger.LogInformation(
+        "Fleet consolidate on startup: stopped={Stopped}, pruned={Pruned}, reactivated={Reactivated}, running={Running}, total={Total}",
+        fleet.StoppedInactiveBots, fleet.PrunedBots, fleet.ReactivatedBots, fleet.RunningBotsAfter, fleet.TotalBotsAfter);
+}
+catch (Exception ex)
+{
+    app.Logger.LogWarning(ex, "Fleet consolidate on startup failed (non-fatal).");
 }
 
 // Login API deshabilitado en modo publico (reactivar con JWT arriba).
@@ -856,6 +881,66 @@ app.MapGet("/api/bots/analytics", async (string? botIds, AppDbContext db) =>
     }
 
     return Results.Ok(result.OrderByDescending(x => x.NetRealizedUsdt));
+});
+
+// Expectancy neta post-fee por estrategia (KPI del plan quality-over-quantity).
+app.MapGet("/api/dashboard/strategy-expectancy", async (string? dateFrom, string? dateTo, AppDbContext db) =>
+{
+    DateTime? fromUtc = null;
+    DateTime? toUtcExclusive = null;
+    if (!string.IsNullOrWhiteSpace(dateFrom) &&
+        DateTime.TryParse(dateFrom, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal, out var parsedFrom))
+    {
+        fromUtc = parsedFrom.Date;
+    }
+
+    if (!string.IsNullOrWhiteSpace(dateTo) &&
+        DateTime.TryParse(dateTo, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal, out var parsedTo))
+    {
+        toUtcExclusive = parsedTo.Date.AddDays(1);
+    }
+
+    var bots = await db.Bots.AsNoTracking().Select(b => new { b.Id, b.StrategyType }).ToListAsync();
+    var strategyByBot = bots.ToDictionary(x => x.Id, x => x.StrategyType);
+    var sellsQuery = db.Trades.AsNoTracking().Where(x => x.Side == "SELL");
+    if (fromUtc is not null)
+    {
+        sellsQuery = sellsQuery.Where(x => x.ExecutedAtUtc >= fromUtc);
+    }
+
+    if (toUtcExclusive is not null)
+    {
+        sellsQuery = sellsQuery.Where(x => x.ExecutedAtUtc < toUtcExclusive);
+    }
+
+    var sells = await sellsQuery.Select(x => new { x.BotId, x.RealizedPnlUsdt }).ToListAsync();
+    var items = sells
+        .GroupBy(x => strategyByBot.TryGetValue(x.BotId, out var st) ? st : StrategyType.Momentum)
+        .Select(g =>
+        {
+            var pnls = g.Select(x => x.RealizedPnlUsdt).ToList();
+            var wins = pnls.Where(p => p > 0m).ToList();
+            var losses = pnls.Where(p => p < 0m).ToList();
+            var sumWins = wins.Sum();
+            var sumLossAbs = Math.Abs(losses.Sum());
+            var closed = pnls.Count;
+            var net = pnls.Sum();
+            return new StrategyExpectancyItem
+            {
+                Strategy = g.Key.ToString(),
+                ClosedTrades = closed,
+                WinRatePercent = closed == 0 ? 0m : decimal.Round(wins.Count * 100m / closed, 2),
+                ProfitFactor = sumLossAbs <= 0m ? (sumWins > 0m ? 999m : 0m) : decimal.Round(sumWins / sumLossAbs, 4),
+                NetRealizedUsdt = decimal.Round(net, 4),
+                ExpectancyUsdt = closed == 0 ? 0m : decimal.Round(net / closed, 4),
+                AvgWinUsdt = wins.Count == 0 ? 0m : decimal.Round(sumWins / wins.Count, 4),
+                AvgLossUsdt = losses.Count == 0 ? 0m : decimal.Round(losses.Sum() / losses.Count, 4)
+            };
+        })
+        .OrderByDescending(x => x.NetRealizedUsdt)
+        .ToList();
+
+    return Results.Ok(items);
 });
 
 // Lectura de diagnostico ML; sin JWT para poder comprobar en navegador / monitor basico.

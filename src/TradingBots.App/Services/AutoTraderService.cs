@@ -19,22 +19,24 @@ public sealed class AutoTraderService(
         "UUSDT", "UUSDC"
     };
 
-    private const decimal MinAdjustedBuyScore = 4.9m;
+    private const decimal MinAdjustedBuyScore = 6.2m;
     private const decimal MinSymbolBiasForStandardEntry = -0.25m;
-    private const decimal MinRawScoreWhenBiasNegative = 5.2m;
-    private const int SuggestionTtlMinutes = 18;
+    private const decimal MinRawScoreWhenBiasNegative = 6.5m;
+    private const int SuggestionTtlMinutes = 10;
     private static readonly TimeSpan RecycleCooldownAfterOperationalStop = TimeSpan.FromSeconds(90);
     private static readonly TimeSpan IdleSlotReleaseWindow = TimeSpan.FromHours(48);
 
-    private const int SymbolQuarantineLookbackDays = 7;
-    private const int MinSellsForSymbolQuarantine = 12;
+    private const int SymbolQuarantineLookbackDays = 14;
+    private const int MinSellsForSymbolQuarantine = 8;
     private const decimal QuarantineAvgLossToWinRatio = 1.2m;
+    private const int MaxAutoBotsHardCap = 15;
+    private const decimal MinNetProfitFloor = 0.35m;
 
     public async Task<int> CreateBotsFromSuggestionsAsync()
     {
         var now = DateTime.UtcNow;
         var settings = await settingsService.GetActiveSettingsAsync();
-        var maxAutoBots = Math.Clamp(settings.MaxAutoBots, 0, 50);
+        var maxAutoBots = Math.Clamp(settings.MaxAutoBots, 0, MaxAutoBotsHardCap);
         var quarantine = await BuildSymbolQuarantineSetAsync(now);
         var existingAutoBots = await dbContext.Bots
             .Where(x => x.IsAutoManaged)
@@ -160,6 +162,12 @@ public sealed class AutoTraderService(
                 continue;
             }
 
+            if (candidate.SuggestedStrategy == StrategyType.MeanReversion)
+            {
+                // MeanReversion pausado: edge debil en spot retail con market orders.
+                continue;
+            }
+
             var alreadyRunning = existingAutoBots.Any(x =>
                 x.State == BotState.Running &&
                 x.Symbols.Contains(candidate.Symbol));
@@ -175,9 +183,8 @@ public sealed class AutoTraderService(
 
             var (sl, tp) = candidate.SuggestedStrategy switch
             {
-                StrategyType.Momentum => (1.85m, 5.2m),
-                StrategyType.MeanReversion => (1.4m, 2.8m),
-                _ => (1.55m, 4.0m)
+                StrategyType.Momentum => (1.6m, 4.5m),
+                _ => (1.5m, 3.8m) // Pullback
             };
 
             var recyclable = existingAutoBots
@@ -203,6 +210,12 @@ public sealed class AutoTraderService(
                 recyclable.MaxPositionPerTradeUsdt = 20m;
                 recyclable.StopLossPercent = sl;
                 recyclable.TakeProfitPercent = tp;
+                recyclable.TakeProfit1Percent = tp;
+                recyclable.TakeProfit1SellPercent = 0m;
+                recyclable.TakeProfit2Percent = tp;
+                recyclable.TrailingActivationPercent = Math.Max(1.5m, MinNetProfitFloor);
+                recyclable.TrailingStopPercent = 0.9m;
+                recyclable.MaxHoldingMinutes = 360;
                 recyclable.MaxDailyLossUsdt = 4m;
                 recyclable.MaxExposurePercent = 100m;
                 recyclable.CooldownMinutesAfterLoss = 5;
@@ -232,6 +245,12 @@ public sealed class AutoTraderService(
                 MaxPositionPerTradeUsdt = 20m,
                 StopLossPercent = sl,
                 TakeProfitPercent = tp,
+                TakeProfit1Percent = tp,
+                TakeProfit1SellPercent = 0m,
+                TakeProfit2Percent = tp,
+                TrailingActivationPercent = Math.Max(1.5m, MinNetProfitFloor),
+                TrailingStopPercent = 0.9m,
+                MaxHoldingMinutes = 360,
                 MaxDailyLossUsdt = 4m,
                 MaxExposurePercent = 100m,
                 CooldownMinutesAfterLoss = 5,
@@ -330,8 +349,14 @@ public sealed class AutoTraderService(
             var net = pnls.Sum();
             var wins = pnls.Where(p => p > 0m).ToList();
             var losses = pnls.Where(p => p < 0m).ToList();
+            var grossWins = wins.Sum();
+            var grossLossAbs = Math.Abs(losses.Sum());
+            var profitFactor = grossLossAbs <= 0m
+                ? (grossWins > 0m ? 999m : 0m)
+                : grossWins / grossLossAbs;
 
             var badNet = net < 0m;
+            var badPf = profitFactor < 1m;
             var heavyAvgLoss = false;
             if (wins.Count >= 2 && losses.Count >= 2)
             {
@@ -343,7 +368,7 @@ public sealed class AutoTraderService(
                 }
             }
 
-            if (badNet || heavyAvgLoss)
+            if (badNet || badPf || heavyAvgLoss)
             {
                 set.Add(g.Key);
             }

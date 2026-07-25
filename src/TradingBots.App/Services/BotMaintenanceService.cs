@@ -15,10 +15,14 @@ public sealed class BotMaintenanceService(
     IMarketHistoryService marketHistory,
     IBinanceSettingsService settingsService) : IBotMaintenanceService
 {
+    private const int MaxAutoBotsHardCap = 15;
+    private const int DefaultMaxRunning = 12;
+    private const int TargetMaxTotalBots = 30;
+
     public async Task<BotMaintenanceResult> ConsolidateFleetAsync(CancellationToken ct = default)
     {
         var settings = await settingsService.GetActiveSettingsAsync();
-        var maxRunning = Math.Clamp(settings.MaxAutoBots, 1, 8);
+        var maxRunning = Math.Clamp(settings.MaxAutoBots <= 0 ? DefaultMaxRunning : settings.MaxAutoBots, 1, MaxAutoBotsHardCap);
         var bots = await db.Bots.OrderByDescending(x => x.State).ThenBy(x => x.Name).ToListAsync(ct);
         var botIds = bots.Select(x => x.Id).ToList();
         var tradeCounts = await db.Trades
@@ -26,8 +30,16 @@ public sealed class BotMaintenanceService(
             .GroupBy(x => x.BotId)
             .Select(g => new { BotId = g.Key, Count = g.Count() })
             .ToDictionaryAsync(x => x.BotId, x => x.Count, ct);
+        var recentTradeCutoff = DateTime.UtcNow.AddDays(-7);
+        var recentTradeBotIds = await db.Trades
+            .Where(x => botIds.Contains(x.BotId) && x.ExecutedAtUtc >= recentTradeCutoff)
+            .Select(x => x.BotId)
+            .Distinct()
+            .ToListAsync(ct);
+        var recentSet = recentTradeBotIds.ToHashSet();
 
         var stopped = 0;
+        var pruned = 0;
         var now = DateTime.UtcNow;
         foreach (var bot in bots.Where(x => x.State == BotState.Running))
         {
@@ -46,14 +58,27 @@ public sealed class BotMaintenanceService(
 
         var runningAuto = bots
             .Where(x => x.IsAutoManaged && x.State == BotState.Running && !x.AutoResumeBlocked)
-            .OrderByDescending(x => x.UpdatedAtUtc)
+            .OrderByDescending(x => x.RealizedPnlUsdt)
+            .ThenByDescending(x => x.UpdatedAtUtc)
             .ToList();
         while (runningAuto.Count > maxRunning)
         {
             var victim = runningAuto
-                .OrderBy(x => tradeCounts.TryGetValue(x.Id, out var tc) ? tc : 0)
+                .OrderBy(x => x.RealizedPnlUsdt)
+                .ThenBy(x => tradeCounts.TryGetValue(x.Id, out var tc) ? tc : 0)
                 .ThenBy(x => x.UpdatedAtUtc)
                 .First();
+            if (victim.PositionQuantity > 0m)
+            {
+                runningAuto.Remove(victim);
+                if (runningAuto.Count <= maxRunning)
+                {
+                    break;
+                }
+
+                continue;
+            }
+
             victim.State = BotState.Stopped;
             victim.LastExecutionError = $"Mantenimiento: exceso de bots auto (max {maxRunning}).";
             victim.UpdatedAtUtc = now;
@@ -61,13 +86,44 @@ public sealed class BotMaintenanceService(
             stopped++;
         }
 
-        if (settings.MaxAutoBots > 8)
+        if (settings.MaxAutoBots > MaxAutoBotsHardCap || settings.MaxAutoBots <= 0 || settings.MaxAutoBots > DefaultMaxRunning)
         {
             var row = await db.BinanceSettings.FirstOrDefaultAsync(x => x.Id == 1, ct);
-            if (row is not null)
+            if (row is not null && row.MaxAutoBots != DefaultMaxRunning)
             {
-                row.MaxAutoBots = 8;
+                row.MaxAutoBots = DefaultMaxRunning;
                 row.UpdatedAtUtc = now;
+            }
+        }
+
+        // Podar bots detenidos por rebalanceo/inactividad sin trades recientes hasta TargetMaxTotalBots.
+        var total = bots.Count;
+        if (total > TargetMaxTotalBots)
+        {
+            var pruneCandidates = bots
+                .Where(x =>
+                    x.IsAutoManaged &&
+                    x.State == BotState.Stopped &&
+                    x.PositionQuantity <= 0m &&
+                    !x.AutoResumeBlocked &&
+                    !recentSet.Contains(x.Id) &&
+                    (x.LastExecutionError.Contains("rebalanceo", StringComparison.OrdinalIgnoreCase) ||
+                     x.LastExecutionError.Contains("inactividad", StringComparison.OrdinalIgnoreCase) ||
+                     x.LastExecutionError.Contains("Mantenimiento:", StringComparison.OrdinalIgnoreCase) ||
+                     x.LastExecutionError.Contains("slot liberado", StringComparison.OrdinalIgnoreCase)))
+                .OrderBy(x => x.RealizedPnlUsdt)
+                .ThenBy(x => x.UpdatedAtUtc)
+                .Take(total - TargetMaxTotalBots)
+                .ToList();
+
+            if (pruneCandidates.Count > 0)
+            {
+                db.Bots.RemoveRange(pruneCandidates);
+                pruned = pruneCandidates.Count;
+                foreach (var p in pruneCandidates)
+                {
+                    bots.Remove(p);
+                }
             }
         }
 
@@ -81,11 +137,10 @@ public sealed class BotMaintenanceService(
                          x.IsAutoManaged &&
                          !x.AutoResumeBlocked &&
                          x.PositionQuantity <= 0m &&
-                         !string.IsNullOrWhiteSpace(x.LastExecutionError) &&
-                         x.LastExecutionError.Contains("Supervisor:", StringComparison.OrdinalIgnoreCase) &&
-                         x.LastExecutionError.Contains("inactividad", StringComparison.OrdinalIgnoreCase) &&
+                         x.RealizedPnlUsdt > 0m &&
                          x.Symbols.Any(TradingSymbolFilters.IsTradableVolatilePair))
-                     .OrderByDescending(x => x.UpdatedAtUtc)
+                     .OrderByDescending(x => x.RealizedPnlUsdt)
+                     .ThenByDescending(x => x.UpdatedAtUtc)
                      .Take(slots))
             {
                 bot.State = BotState.Running;
@@ -98,14 +153,17 @@ public sealed class BotMaintenanceService(
 
         await db.SaveChangesAsync(ct);
         var runningAfter = await db.Bots.CountAsync(x => x.State == BotState.Running, ct);
+        var totalAfter = await db.Bots.CountAsync(ct);
         return new BotMaintenanceResult
         {
             StoppedInactiveBots = stopped,
+            PrunedBots = pruned,
             ReactivatedBots = reactivated,
             RunningBotsAfter = runningAfter,
-            Message = reactivated > 0
-                ? $"Consolidacion: {stopped} detenido(s), {reactivated} reactivado(s) tras parada del supervisor. En ejecucion: {runningAfter} (max {maxRunning})."
-                : $"Consolidacion: {stopped} bot(s) detenidos. En ejecucion: {runningAfter} (max auto {maxRunning})."
+            TotalBotsAfter = totalAfter,
+            Message =
+                $"Consolidacion: {stopped} detenido(s), {pruned} podado(s), {reactivated} reactivado(s). " +
+                $"En ejecucion: {runningAfter}/{maxRunning}. Total bots: {totalAfter}."
         };
     }
 

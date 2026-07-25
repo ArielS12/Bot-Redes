@@ -35,6 +35,10 @@ public sealed class BotService(
     /// <summary>Mínimo de notional por orden de compra (coherente con filtros típicos MIN_NOTIONAL en Binance).</summary>
     private const decimal MinQuoteOrderUsdt = 10m;
     private const decimal BaseRiskPercentPerTrade = 0.50m;
+    /// <summary>Coste estimado round-trip (fees+slippage) en basis points.</summary>
+    private const decimal RoundTripCostBps = 20m;
+    /// <summary>Beneficio minimo neto (%) para salidas tacticas / TP parcial.</summary>
+    private const decimal MinNetProfitToExitPercent = 0.35m;
     private const int ExecutionFailureCircuitThreshold = 3;
     private static readonly TimeSpan ExecutionFailureCircuitDuration = TimeSpan.FromMinutes(20);
     private const int MinClosedTradesForAdaptive = 100;
@@ -210,7 +214,7 @@ public sealed class BotService(
         }
 
         var entryPx = bot.AverageEntryPrice > 0m ? bot.AverageEntryPrice : fill.AveragePrice;
-        var realized = decimal.Round((fill.AveragePrice - entryPx) * fill.ExecutedQuantity, 2);
+        var realized = ComputeRealizedPnlUsdt(entryPx, fill.AveragePrice, fill.ExecutedQuantity);
         bot.RealizedPnlUsdt += realized;
         bot.ConsecutiveLossTrades = realized < 0m ? bot.ConsecutiveLossTrades + 1 : 0;
         if (realized < 0m && bot.CooldownMinutesAfterLoss > 0)
@@ -384,18 +388,27 @@ public sealed class BotService(
             var pnlPct = bot.PositionQuantity > 0m && bot.AverageEntryPrice > 0m
                 ? ((activePrice - bot.AverageEntryPrice) / bot.AverageEntryPrice) * 100m
                 : 0m;
+            var roundTripCostPct = RoundTripCostBps / 100m;
             var progressToTp = bot.TakeProfitPercent > 0m ? pnlPct / bot.TakeProfitPercent : 0m;
-            var breakevenArmed = progressToTp >= 0.30m && bot.PositionQuantity > 0m;
+            var breakevenArmed = progressToTp >= 0.70m &&
+                                 pnlPct > roundTripCostPct &&
+                                 bot.PositionQuantity > 0m;
             var breakevenStopHit = breakevenArmed && activePrice < bot.AverageEntryPrice;
-            var trailingArmed = pnlPct >= bot.TrailingActivationPercent && bot.PeakPriceSinceEntry > 0m;
+            var trailingArmed = pnlPct >= Math.Max(bot.TrailingActivationPercent, MinNetProfitToExitPercent) &&
+                                bot.PeakPriceSinceEntry > 0m;
             var trailingStopHit = trailingArmed &&
                                   activePrice <= bot.PeakPriceSinceEntry * (1m - (bot.TrailingStopPercent / 100m));
-            var timeStopHit = bot.PositionOpenedAtUtc is not null &&
+            var timeExpired = bot.PositionOpenedAtUtc is not null &&
                               bot.MaxHoldingMinutes > 0 &&
                               DateTime.UtcNow >= bot.PositionOpenedAtUtc.Value.AddMinutes(bot.MaxHoldingMinutes);
             var activeStructure = structureBySymbol.GetValueOrDefault(activeSymbol);
             var contextDefensiveExitHit = ShouldMarketStructureDefensiveExit(activeStructure, pnlPct);
-            var profitableNow = bot.PositionQuantity > 0m && bot.AverageEntryPrice > 0m && activePrice > bot.AverageEntryPrice;
+            // Time-stop: no forzar cierre en rojo profundo; solo flat neto, profit minimo o rotura de estructura.
+            var timeStopHit = timeExpired &&
+                              (contextDefensiveExitHit ||
+                               pnlPct >= MinNetProfitToExitPercent ||
+                               pnlPct >= -roundTripCostPct);
+            var netProfitableEnough = pnlPct >= MinNetProfitToExitPercent;
             var investedCapital = bot.PositionQuantity > 0m && bot.AverageEntryPrice > 0m
                 ? bot.PositionQuantity * bot.AverageEntryPrice
                 : 0m;
@@ -568,11 +581,12 @@ public sealed class BotService(
             {
                 // Salidas de riesgo (SL/time-stop/contexto roto/breakeven) deben poder ejecutarse incluso sin profit.
                 var riskExit = stopLossHit || breakevenStopHit || timeStopHit || contextDefensiveExitHit;
-                // Salidas tacticas (senal/TP/trailing) se mantienen condicionadas a profit.
-                var tacticalExit = profitableNow && (sellSignal || takeProfitHit || trailingStopHit || pnlPct >= bot.TakeProfit2Percent);
+                // Salidas tacticas: exigen beneficio neto sobre coste round-trip estimado.
+                var tacticalExit = netProfitableEnough &&
+                                   (sellSignal || takeProfitHit || trailingStopHit || pnlPct >= bot.TakeProfit2Percent);
                 var requestFullExit = riskExit || tacticalExit;
                 var requestPartialTp = !bot.TakeProfit1Taken &&
-                                       profitableNow &&
+                                       netProfitableEnough &&
                                        pnlPct >= bot.TakeProfit1Percent &&
                                        bot.TakeProfit1SellPercent > 0m;
                 var shouldExit = requestFullExit || requestPartialTp;
@@ -619,7 +633,7 @@ public sealed class BotService(
                 if (fill is not null && fill.ExecutedQuantity > 0 && fill.AveragePrice > 0)
                 {
                     ResetExecutionFailure(bot);
-                    var realized = (fill.AveragePrice - bot.AverageEntryPrice) * fill.ExecutedQuantity;
+                    var realized = ComputeRealizedPnlUsdt(bot.AverageEntryPrice, fill.AveragePrice, fill.ExecutedQuantity);
                     realized = decimal.Round(realized, 2);
                     bot.RealizedPnlUsdt += realized;
                     bot.ConsecutiveLossTrades = realized < 0m ? bot.ConsecutiveLossTrades + 1 : 0;
@@ -1131,6 +1145,12 @@ public sealed class BotService(
             return 0m;
         }
 
+        // Budgets pequenos (AutoPilot ~20 USDT): usar el cupo completo por trade para evitar overtrading a 10 USDT.
+        if (bot.BudgetUsdt <= 25m && maxAllowed >= MinQuoteOrderUsdt)
+        {
+            return decimal.Round(maxAllowed, 2, MidpointRounding.ToZero);
+        }
+
         var stopDistancePct = Math.Max(0.20m, bot.StopLossPercent) / 100m;
         var volatilityPenalty = 1m + Math.Max(0m, snapshot.VolatilityPercent);
         var atrPenalty = 1m + Math.Max(0m, snapshot.AtrPercent / 2m);
@@ -1138,14 +1158,25 @@ public sealed class BotService(
         var quoteByRisk = stopDistancePct <= 0m ? maxAllowed : riskBudgetUsdt / stopDistancePct;
         var sized = decimal.Round(Math.Min(maxAllowed, Math.Max(0m, quoteByRisk)), 2, MidpointRounding.ToZero);
 
-        // Con budgets pequeños (p.ej. 20 USDT) el riesgo porcentual puede quedar bajo el notional mínimo de Binance/paper;
-        // si el tope lo permite, subimos al mínimo operable para no bloquear el ciclo indefinidamente.
         if (sized > 0m && sized < MinQuoteOrderUsdt && maxAllowed >= MinQuoteOrderUsdt)
         {
             sized = MinQuoteOrderUsdt;
         }
 
         return sized;
+    }
+
+    /// <summary>PnL realizado restando coste round-trip estimado (fees+slippage).</summary>
+    private static decimal ComputeRealizedPnlUsdt(decimal entryPrice, decimal exitPrice, decimal quantity)
+    {
+        if (quantity <= 0m || entryPrice <= 0m || exitPrice <= 0m)
+        {
+            return 0m;
+        }
+
+        var gross = (exitPrice - entryPrice) * quantity;
+        var estimatedFee = (entryPrice + exitPrice) * quantity * (RoundTripCostBps / 20_000m);
+        return decimal.Round(gross - estimatedFee, 2);
     }
 
     private bool IsSymbolCircuitOpen(string symbol)

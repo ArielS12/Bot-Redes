@@ -58,7 +58,9 @@ public sealed class CohortReadinessView
 public sealed class BotMaintenanceResult
 {
     public int StoppedInactiveBots { get; set; }
+    public int PrunedBots { get; set; }
     public int ReactivatedBots { get; set; }
     public int RunningBotsAfter { get; set; }
+    public int TotalBotsAfter { get; set; }
     public string Message { get; set; } = string.Empty;
 }

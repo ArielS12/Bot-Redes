@@ -11,7 +11,7 @@ public static class EntryFilters
 
     private const decimal DefaultMinRelativeVolume = 0.45m;
     private const decimal MajorMinRelativeVolume = 0.28m;
-    private const decimal AltMinRelativeVolume = 0.35m;
+    private const decimal AltMinRelativeVolume = 0.55m;
 
     private static readonly HashSet<string> MajorBases = new(StringComparer.OrdinalIgnoreCase)
     {

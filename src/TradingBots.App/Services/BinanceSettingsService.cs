@@ -54,7 +54,7 @@ public sealed class BinanceSettingsService(AppDbContext dbContext) : IBinanceSet
         settings.Environment = request.Environment;
         settings.LiveSafetyConfirmed = request.LiveSafetyConfirmed;
         settings.GlobalKillSwitch = request.GlobalKillSwitch;
-        settings.MaxAutoBots = Math.Clamp(request.MaxAutoBots, 0, 50);
+        settings.MaxAutoBots = Math.Clamp(request.MaxAutoBots, 0, 15);
         settings.AutoControlTuningEnabled = request.AutoControlTuningEnabled;
         settings.SupervisorInactiveMinutes = Math.Clamp(request.SupervisorInactiveMinutes, 60, 300);
         settings.RebalanceOutOfTopCycles = Math.Clamp(request.RebalanceOutOfTopCycles, 2, 6);
@@ -109,7 +109,7 @@ public sealed class BinanceSettingsService(AppDbContext dbContext) : IBinanceSet
         LiveSafetyConfirmed = settings.LiveSafetyConfirmed,
         LiveEnabledByChecklist = settings.LiveEnabledByChecklist,
         GlobalKillSwitch = settings.GlobalKillSwitch,
-        MaxAutoBots = Math.Clamp(settings.MaxAutoBots, 0, 50),
+        MaxAutoBots = Math.Clamp(settings.MaxAutoBots, 0, 15),
         AutoControlTuningEnabled = settings.AutoControlTuningEnabled,
         SupervisorInactiveMinutes = Math.Clamp(settings.SupervisorInactiveMinutes <= 0 ? 180 : settings.SupervisorInactiveMinutes, 60, 300),
         RebalanceOutOfTopCycles = Math.Clamp(settings.RebalanceOutOfTopCycles <= 0 ? 3 : settings.RebalanceOutOfTopCycles, 2, 6),

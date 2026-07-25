@@ -17,7 +17,12 @@ public sealed class MarketAdvisorService(
 {
     private const decimal MinAdvisorQuoteVolume24h = 1_000_000m;
     private const decimal MinMoverQuoteVolume24h = 250_000m;
-    private const decimal MinMoverChange24hPercent = 6m;
+    /// <summary>Rango de movers moderados (anti-chase: evitar pumps >= 6%).</summary>
+    private const decimal MinMoverChange24hPercent = 1.5m;
+    private const decimal MaxMoverChange24hPercent = 5.5m;
+    private const decimal ChaseBlockChange24hPercent = 6m;
+    private const decimal ChaseBlockRsi = 65m;
+    private const decimal BuyScoreThreshold = 6.2m;
     private const int MaxAdvisorCandidates = 48;
 
     private static readonly HashSet<string> AdvisorSymbolExclusions = new(StringComparer.Ordinal)
@@ -133,12 +138,17 @@ public sealed class MarketAdvisorService(
 
         var topMovers = tradable
             .Where(x => x.QuoteVolume24h >= MinMoverQuoteVolume24h)
-            .Where(x => x.PriceChangePercent24h >= MinMoverChange24hPercent)
-            .OrderByDescending(x => x.PriceChangePercent24h)
+            .Where(x =>
+            {
+                var abs = Math.Abs(x.PriceChangePercent24h);
+                return abs >= MinMoverChange24hPercent && abs <= MaxMoverChange24hPercent;
+            })
+            .OrderByDescending(x => Math.Abs(x.PriceChangePercent24h))
             .Take(20);
 
         var liquidityWeightedMovers = tradable
             .Where(x => x.QuoteVolume24h >= MinMoverQuoteVolume24h)
+            .Where(x => Math.Abs(x.PriceChangePercent24h) <= MaxMoverChange24hPercent)
             .OrderByDescending(x => Math.Abs(x.PriceChangePercent24h) * Log10Score(x.QuoteVolume24h))
             .Take(16);
 
@@ -181,6 +191,11 @@ public sealed class MarketAdvisorService(
         }
 
         var strategy = DetectStrategy(ticker, t1);
+        if (strategy == StrategyType.MeanReversion)
+        {
+            // MeanReversion deshabilitado en advisor para AutoPilot.
+            strategy = ticker.PriceChangePercent24h >= 0m ? StrategyType.Momentum : StrategyType.Pullback;
+        }
         var trendStrength = ScoreTrend(t1, t5, t15);
         var momentumStrength = ScoreMomentum(t1, ticker.PriceChangePercent24h);
         var liquidityStrength = ScoreLiquidity(ticker.QuoteVolume24h, t1.RelativeVolume);
@@ -190,8 +205,20 @@ public sealed class MarketAdvisorService(
         var contextScore = ScoreMarketContext(structure);
         var totalScore = Math.Max(0m, trendStrength + momentumStrength + liquidityStrength + contextScore - volatilityPenalty - costPenalty - flatPenalty);
 
-        var confidence = totalScore >= 6.5m ? "ALTA" : totalScore >= 4.5m ? "MEDIA" : "BAJA";
-        var signal = totalScore >= 5.05m ? "BUY" : totalScore >= 3.35m ? "WATCH" : "HOLD";
+        var confidence = totalScore >= 7.2m ? "ALTA" : totalScore >= 5.5m ? "MEDIA" : "BAJA";
+        var chaseBlocked = Math.Abs(ticker.PriceChangePercent24h) >= ChaseBlockChange24hPercent &&
+                           (t1.Rsi14 >= ChaseBlockRsi || structure?.IsOverextended == true);
+        var signal = chaseBlocked
+            ? (totalScore >= 3.35m ? "WATCH" : "HOLD")
+            : totalScore >= BuyScoreThreshold
+                ? "BUY"
+                : totalScore >= 3.35m
+                    ? "WATCH"
+                    : "HOLD";
+        if (chaseBlocked)
+        {
+            totalScore = Math.Min(totalScore, BuyScoreThreshold - 0.05m);
+        }
         var contextText = structure?.HasData == true
             ? $"Contexto={contextScore:0.00} ({structure.Summary})"
             : "Contexto=sin historial 30-90d";
