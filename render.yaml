@@ -24,6 +24,11 @@ services:
         value: http://+:5001
       - key: PORT
         value: 5001
+      # Evita crash al arrancar por limite inotify en instancias free de Render.
+      - key: DOTNET_HOSTBUILDER__RELOADCONFIGONCHANGE
+        value: "false"
+      - key: DOTNET_USE_POLLING_FILE_WATCHER
+        value: "true"
       - key: DB_PROVIDER
         value: Postgres
       - key: Database__Provider

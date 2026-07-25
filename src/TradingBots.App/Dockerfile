@@ -13,6 +13,9 @@ WORKDIR /app
 
 ENV ASPNETCORE_URLS=http://+:5001
 ENV ASPNETCORE_ENVIRONMENT=Production
+# Render free: evita FileSystemWatcher/inotify (crash "user limit 128 inotify instances").
+ENV DOTNET_HOSTBUILDER__RELOADCONFIGONCHANGE=false
+ENV DOTNET_USE_POLLING_FILE_WATCHER=true
 EXPOSE 5001
 
 COPY --from=build /app/publish .

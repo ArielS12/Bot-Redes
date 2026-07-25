@@ -14,6 +14,9 @@ using TradingBots.App.Services;
 using TradingBots.App.Services.Strategies;
 using TradingBots.App;
 
+// En contenedores con bajo limite inotify (Render free), el reload de appsettings
+// por FileSystemWatcher puede tumbar el proceso. Desactivado via
+// DOTNET_HOSTBUILDER__RELOADCONFIGONCHANGE=false (Dockerfile/render.yaml).
 var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddRazorComponents()
