@@ -56,6 +56,18 @@ public sealed class BotMaintenanceService(
             }
         }
 
+        // Solo Pullback en flota activa: detener Momentum/MeanReversion sin posicion abierta.
+        foreach (var bot in bots.Where(x =>
+                     x.State == BotState.Running &&
+                     x.PositionQuantity <= 0m &&
+                     x.StrategyType != StrategyType.Pullback))
+        {
+            bot.State = BotState.Stopped;
+            bot.LastExecutionError = "Mantenimiento: solo Pullback activo; Momentum/MeanReversion detenidos.";
+            bot.UpdatedAtUtc = now;
+            stopped++;
+        }
+
         var runningAuto = bots
             .Where(x => x.IsAutoManaged && x.State == BotState.Running && !x.AutoResumeBlocked)
             .OrderByDescending(x => x.RealizedPnlUsdt)
@@ -107,11 +119,14 @@ public sealed class BotMaintenanceService(
                     x.PositionQuantity <= 0m &&
                     !x.AutoResumeBlocked &&
                     !recentSet.Contains(x.Id) &&
-                    (x.LastExecutionError.Contains("rebalanceo", StringComparison.OrdinalIgnoreCase) ||
+                    (x.StrategyType != StrategyType.Pullback ||
+                     x.LastExecutionError.Contains("rebalanceo", StringComparison.OrdinalIgnoreCase) ||
                      x.LastExecutionError.Contains("inactividad", StringComparison.OrdinalIgnoreCase) ||
                      x.LastExecutionError.Contains("Mantenimiento:", StringComparison.OrdinalIgnoreCase) ||
-                     x.LastExecutionError.Contains("slot liberado", StringComparison.OrdinalIgnoreCase)))
-                .OrderBy(x => x.RealizedPnlUsdt)
+                     x.LastExecutionError.Contains("slot liberado", StringComparison.OrdinalIgnoreCase) ||
+                     x.LastExecutionError.Contains("Momentum/MeanReversion", StringComparison.OrdinalIgnoreCase)))
+                .OrderBy(x => x.StrategyType == StrategyType.Pullback ? 1 : 0)
+                .ThenBy(x => x.RealizedPnlUsdt)
                 .ThenBy(x => x.UpdatedAtUtc)
                 .Take(total - TargetMaxTotalBots)
                 .ToList();
@@ -137,6 +152,7 @@ public sealed class BotMaintenanceService(
                          x.IsAutoManaged &&
                          !x.AutoResumeBlocked &&
                          x.PositionQuantity <= 0m &&
+                         x.StrategyType == StrategyType.Pullback &&
                          x.RealizedPnlUsdt > 0m &&
                          x.Symbols.Any(TradingSymbolFilters.IsTradableVolatilePair))
                      .OrderByDescending(x => x.RealizedPnlUsdt)

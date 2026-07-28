@@ -190,12 +190,8 @@ public sealed class MarketAdvisorService(
             return null;
         }
 
-        var strategy = DetectStrategy(ticker, t1);
-        if (strategy == StrategyType.MeanReversion)
-        {
-            // MeanReversion deshabilitado en advisor para AutoPilot.
-            strategy = ticker.PriceChangePercent24h >= 0m ? StrategyType.Momentum : StrategyType.Pullback;
-        }
+        // AutoPilot concentrado en Pullback (Momentum pausado por edge negativo post-fee).
+        var strategy = StrategyType.Pullback;
         var trendStrength = ScoreTrend(t1, t5, t15);
         var momentumStrength = ScoreMomentum(t1, ticker.PriceChangePercent24h);
         var liquidityStrength = ScoreLiquidity(ticker.QuoteVolume24h, t1.RelativeVolume);

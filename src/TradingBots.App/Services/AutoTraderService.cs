@@ -70,6 +70,19 @@ public sealed class AutoTraderService(
             }
         }
 
+        // Solo Pullback: Momentum pausado tras 72h con PF post-cambio ~0.21.
+        foreach (var bot in existingAutoBots.Where(x =>
+                     x.State == BotState.Running &&
+                     x.PositionQuantity <= 0m &&
+                     (x.StrategyType == StrategyType.Momentum || x.StrategyType == StrategyType.MeanReversion)))
+        {
+            bot.State = BotState.Stopped;
+            bot.LastExecutionError =
+                "AutoTrader: Momentum/MeanReversion pausados; flota concentrada en Pullback (edge post-fee).";
+            bot.UpdatedAtUtc = now;
+            bot.OutOfTopCycles = 0;
+        }
+
         await dbContext.SaveChangesAsync();
 
         var minSuggestionTime = now.AddMinutes(-SuggestionTtlMinutes);
@@ -162,9 +175,9 @@ public sealed class AutoTraderService(
                 continue;
             }
 
-            if (candidate.SuggestedStrategy == StrategyType.MeanReversion)
+            if (candidate.SuggestedStrategy != StrategyType.Pullback)
             {
-                // MeanReversion pausado: edge debil en spot retail con market orders.
+                // Solo Pullback: Momentum/MeanReversion no se crean ni reciclan.
                 continue;
             }
 
@@ -181,11 +194,9 @@ public sealed class AutoTraderService(
                 break;
             }
 
-            var (sl, tp) = candidate.SuggestedStrategy switch
-            {
-                StrategyType.Momentum => (1.6m, 4.5m),
-                _ => (1.5m, 3.8m) // Pullback
-            };
+            const decimal sl = 1.5m;
+            const decimal tp = 3.8m;
+            var strategy = StrategyType.Pullback;
 
             var recyclable = existingAutoBots
                 .Where(x => x.State == BotState.Stopped &&
@@ -205,7 +216,7 @@ public sealed class AutoTraderService(
                     continue;
                 }
 
-                recyclable.Name = $"AutoPilot-{candidate.SuggestedStrategy}-{candidate.Symbol}";
+                recyclable.Name = $"AutoPilot-Pullback-{candidate.Symbol}";
                 recyclable.BudgetUsdt = 20m;
                 recyclable.MaxPositionPerTradeUsdt = 20m;
                 recyclable.StopLossPercent = sl;
@@ -224,7 +235,7 @@ public sealed class AutoTraderService(
                 recyclable.State = BotState.Running;
                 recyclable.IsAutoManaged = true;
                 recyclable.AutoScaleReferencePnlUsdt = 0m;
-                recyclable.StrategyType = candidate.SuggestedStrategy;
+                recyclable.StrategyType = strategy;
                 recyclable.LastExecutionError = string.Empty;
                 recyclable.ConsecutiveLossTrades = 0;
                 recyclable.RollingExpectancyUsdt = 0m;
@@ -240,7 +251,7 @@ public sealed class AutoTraderService(
             var startUtc = DateTime.UtcNow;
             dbContext.Bots.Add(new TradingBot
             {
-                Name = $"AutoPilot-{candidate.SuggestedStrategy}-{candidate.Symbol}",
+                Name = $"AutoPilot-Pullback-{candidate.Symbol}",
                 BudgetUsdt = 20m,
                 MaxPositionPerTradeUsdt = 20m,
                 StopLossPercent = sl,
@@ -259,7 +270,7 @@ public sealed class AutoTraderService(
                 State = BotState.Running,
                 IsAutoManaged = true,
                 AutoScaleReferencePnlUsdt = 0m,
-                StrategyType = candidate.SuggestedStrategy,
+                StrategyType = strategy,
                 OutOfTopCycles = 0,
                 LastRunningStartedAtUtc = startUtc,
                 UpdatedAtUtc = startUtc
