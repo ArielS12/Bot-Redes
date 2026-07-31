@@ -19,9 +19,9 @@ public sealed class AutoTraderService(
         "UUSDT", "UUSDC"
     };
 
-    private const decimal MinAdjustedBuyScore = 6.2m;
+    private const decimal MinAdjustedBuyScore = 5.7m;
     private const decimal MinSymbolBiasForStandardEntry = -0.25m;
-    private const decimal MinRawScoreWhenBiasNegative = 6.5m;
+    private const decimal MinRawScoreWhenBiasNegative = 6.0m;
     private const int SuggestionTtlMinutes = 10;
     private static readonly TimeSpan RecycleCooldownAfterOperationalStop = TimeSpan.FromSeconds(90);
     private static readonly TimeSpan IdleSlotReleaseWindow = TimeSpan.FromHours(48);
@@ -97,7 +97,8 @@ public sealed class AutoTraderService(
                         !quarantine.Contains(x.Symbol) &&
                         !AutopilotSymbolBlocklist.Contains(x.Symbol) &&
                         TradingSymbolFilters.IsTradableVolatilePair(x.Symbol))
-            .OrderByDescending(x => GetAdjustedScore(x, symbolBias))
+            .OrderByDescending(x => EntryFilters.IsMajorSymbol(x.Symbol) ? 1 : 0)
+            .ThenByDescending(x => GetAdjustedScore(x, symbolBias))
             .ToList();
 
         if (candidates.Count == 0 || maxAutoBots == 0)

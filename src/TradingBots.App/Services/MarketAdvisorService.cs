@@ -22,7 +22,8 @@ public sealed class MarketAdvisorService(
     private const decimal MaxMoverChange24hPercent = 5.5m;
     private const decimal ChaseBlockChange24hPercent = 6m;
     private const decimal ChaseBlockRsi = 65m;
-    private const decimal BuyScoreThreshold = 6.2m;
+    /// <summary>Umbral BUY alineado a setups Pullback (antes 6.2 con score tipo Momentum).</summary>
+    private const decimal BuyScoreThreshold = 5.7m;
     private const int MaxAdvisorCandidates = 48;
 
     private static readonly HashSet<string> AdvisorSymbolExclusions = new(StringComparer.Ordinal)
@@ -242,19 +243,28 @@ public sealed class MarketAdvisorService(
         return score;
     }
 
+    /// <summary>
+    /// Score de timing para flota Pullback-only: premia RSI en zona de pullback (~28-45),
+    /// no RSI 50-72 (momentum chase), que dejaba bots esperando RSI&lt;=38 sin nunca entrar.
+    /// </summary>
     private static decimal ScoreMomentum(TechnicalMarketSnapshot t1, decimal change24h)
     {
         decimal score = 0m;
         if (t1.MacdLine > t1.MacdSignal && t1.MacdHistogram > t1.PreviousMacdHistogram) score += 1.2m;
-        if (t1.Rsi14 is >= 50m and <= 72m) score += 1.1m;
-        if (change24h > 0m)
+        if (t1.Rsi14 is >= 28m and <= 45m) score += 1.35m;
+        else if (t1.Rsi14 is > 45m and <= 52m) score += 0.35m;
+        else if (t1.Rsi14 >= 65m) score -= 0.7m;
+
+        // Dip moderado en 24h = oportunidad pullback; pumps fuertes se penalizan vía chase block.
+        if (change24h < 0m)
         {
-            score += Math.Min(1.8m, change24h / 18m);
+            score += Math.Min(1.25m, Math.Abs(change24h) / 12m);
         }
         else
         {
-            score += Math.Min(0.9m, Math.Abs(change24h) / 25m);
+            score += Math.Min(0.7m, change24h / 22m);
         }
+
         return score;
     }
 

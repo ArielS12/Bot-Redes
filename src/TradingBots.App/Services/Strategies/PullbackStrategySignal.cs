@@ -6,9 +6,11 @@ public sealed class PullbackStrategySignal : IStrategySignalProvider
 {
     public StrategyType Strategy => StrategyType.Pullback;
 
+    private const decimal MaxEntryRsi = 44m;
+
     public bool ShouldBuy(TechnicalMarketSnapshot technical) =>
         technical.EmaFast >= technical.EmaSlow &&
-        technical.Rsi14 <= 38m &&
+        technical.Rsi14 <= MaxEntryRsi &&
         technical.MacdHistogram > technical.PreviousMacdHistogram;
 
     public bool ShouldSell(TechnicalMarketSnapshot technical) =>
@@ -21,7 +23,7 @@ public sealed class PullbackStrategySignal : IStrategySignalProvider
         (technical.RelativeVolume * 5m);
 
     public bool PassesMultiTimeframeTrend(TechnicalMarketSnapshot tf5, TechnicalMarketSnapshot tf15) =>
-        tf15.EmaFast >= tf15.EmaSlow && tf5.Rsi14 <= 55m;
+        tf15.EmaFast >= tf15.EmaSlow && tf5.Rsi14 <= 58m;
 
     public string DescribeBuySignalGap(TechnicalMarketSnapshot t)
     {
@@ -30,9 +32,9 @@ public sealed class PullbackStrategySignal : IStrategySignalProvider
             return "Pullback 1m: EMA rapida debajo de la lenta.";
         }
 
-        if (t.Rsi14 > 38m)
+        if (t.Rsi14 > MaxEntryRsi)
         {
-            return $"Pullback 1m: RSI {t.Rsi14:0.#} no en sobreventa (max 38).";
+            return $"Pullback 1m: RSI {t.Rsi14:0.#} no en zona de pullback (max {MaxEntryRsi:0}).";
         }
 
         if (t.MacdHistogram <= t.PreviousMacdHistogram)
