@@ -83,6 +83,19 @@ public sealed class AutoTraderService(
             bot.OutOfTopCycles = 0;
         }
 
+        // AutoPilot solo majors/mid liquidos: liberar slots ocupados por alts iliquidos.
+        foreach (var bot in existingAutoBots.Where(x =>
+                     x.State == BotState.Running &&
+                     x.PositionQuantity <= 0m &&
+                     !EntryFilters.IsAutopilotAllowedSymbol(x.Symbols.FirstOrDefault() ?? string.Empty)))
+        {
+            bot.State = BotState.Stopped;
+            bot.LastExecutionError =
+                "AutoTrader: simbolo fuera del universo liquido AutoPilot (majors/mid-caps).";
+            bot.UpdatedAtUtc = now;
+            bot.OutOfTopCycles = 0;
+        }
+
         await dbContext.SaveChangesAsync();
 
         var minSuggestionTime = now.AddMinutes(-SuggestionTtlMinutes);
@@ -96,7 +109,8 @@ public sealed class AutoTraderService(
                         PassesQualityGate(x, symbolBias) &&
                         !quarantine.Contains(x.Symbol) &&
                         !AutopilotSymbolBlocklist.Contains(x.Symbol) &&
-                        TradingSymbolFilters.IsTradableVolatilePair(x.Symbol))
+                        TradingSymbolFilters.IsTradableVolatilePair(x.Symbol) &&
+                        EntryFilters.IsAutopilotAllowedSymbol(x.Symbol))
             .OrderByDescending(x => EntryFilters.IsMajorSymbol(x.Symbol) ? 1 : 0)
             .ThenByDescending(x => GetAdjustedScore(x, symbolBias))
             .ToList();

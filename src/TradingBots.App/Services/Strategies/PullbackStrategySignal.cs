@@ -6,7 +6,7 @@ public sealed class PullbackStrategySignal : IStrategySignalProvider
 {
     public StrategyType Strategy => StrategyType.Pullback;
 
-    private const decimal MaxEntryRsi = 44m;
+    private const decimal MaxEntryRsi = 48m;
 
     public bool ShouldBuy(TechnicalMarketSnapshot technical) =>
         technical.EmaFast >= technical.EmaSlow &&
@@ -23,7 +23,7 @@ public sealed class PullbackStrategySignal : IStrategySignalProvider
         (technical.RelativeVolume * 5m);
 
     public bool PassesMultiTimeframeTrend(TechnicalMarketSnapshot tf5, TechnicalMarketSnapshot tf15) =>
-        tf15.EmaFast >= tf15.EmaSlow && tf5.Rsi14 <= 58m;
+        tf15.EmaFast >= tf15.EmaSlow && tf5.Rsi14 <= 62m;
 
     public string DescribeBuySignalGap(TechnicalMarketSnapshot t)
     {

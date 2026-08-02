@@ -158,6 +158,9 @@ public sealed class MarketAdvisorService(
             .Concat(liquidityWeightedMovers)
             .GroupBy(x => x.Symbol, StringComparer.Ordinal)
             .Select(g => g.First())
+            .OrderByDescending(x => EntryFilters.IsAutopilotAllowedSymbol(x.Symbol) ? 1 : 0)
+            .ThenByDescending(x => EntryFilters.IsMajorSymbol(x.Symbol) ? 1 : 0)
+            .ThenByDescending(x => x.QuoteVolume24h)
             .Take(MaxAdvisorCandidates)
             .ToList();
     }
@@ -251,8 +254,8 @@ public sealed class MarketAdvisorService(
     {
         decimal score = 0m;
         if (t1.MacdLine > t1.MacdSignal && t1.MacdHistogram > t1.PreviousMacdHistogram) score += 1.2m;
-        if (t1.Rsi14 is >= 28m and <= 45m) score += 1.35m;
-        else if (t1.Rsi14 is > 45m and <= 52m) score += 0.35m;
+        if (t1.Rsi14 is >= 28m and <= 48m) score += 1.35m;
+        else if (t1.Rsi14 is > 48m and <= 55m) score += 0.35m;
         else if (t1.Rsi14 >= 65m) score -= 0.7m;
 
         // Dip moderado en 24h = oportunidad pullback; pumps fuertes se penalizan vía chase block.

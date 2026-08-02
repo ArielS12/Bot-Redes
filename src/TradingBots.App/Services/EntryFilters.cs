@@ -2,47 +2,105 @@ using TradingBots.App.Models;
 
 namespace TradingBots.App.Services;
 
-/// <summary>Umbrales de entrada por liquidez/volumen. Majors (BTC/ETH/SOL/BNB) mas permisivos.</summary>
+/// <summary>
+/// Liquidez/volumen y universo AutoPilot.
+/// AutoPilot solo opera bases liquidas (majors + mid-caps); evita alts iliquidos que nunca pasan el tick.
+/// </summary>
 public static class EntryFilters
 {
-    private const decimal DefaultMinQuoteVolume24h = 750_000m;
-    private const decimal MajorMinQuoteVolume24h = 300_000m;
-    private const decimal AltMinQuoteVolume24h = 500_000m;
+    private const decimal CoreMinQuoteVolume24h = 250_000m;
+    private const decimal MidMinQuoteVolume24h = 400_000m;
+    private const decimal AltMinQuoteVolume24h = 750_000m;
 
-    private const decimal DefaultMinRelativeVolume = 0.45m;
-    private const decimal MajorMinRelativeVolume = 0.28m;
-    private const decimal AltMinRelativeVolume = 0.40m;
+    private const decimal CoreMinRelativeVolume = 0.15m;
+    private const decimal MidMinRelativeVolume = 0.22m;
+    private const decimal AltMinRelativeVolume = 0.35m;
 
-    private static readonly HashSet<string> MajorBases = new(StringComparer.OrdinalIgnoreCase)
+    /// <summary>Nucleo: umbrales mas permisivos.</summary>
+    private static readonly HashSet<string> CoreBases = new(StringComparer.OrdinalIgnoreCase)
     {
-        "BTC", "ETH", "SOL", "BNB"
+        "BTC", "ETH", "SOL", "BNB", "XRP", "ADA", "DOGE"
     };
 
-    public static bool IsMajorSymbol(string symbol)
+    /// <summary>Universo permitido en AutoPilot (Pullback-only). Fuera de esto no se crean/reactivanslots.</summary>
+    private static readonly HashSet<string> AutopilotBases = new(StringComparer.OrdinalIgnoreCase)
     {
+        "BTC", "ETH", "SOL", "BNB", "XRP", "ADA", "DOGE", "LINK", "AVAX", "LTC", "DOT",
+        "ATOM", "NEAR", "APT", "ARB", "OP", "SUI", "UNI", "AAVE", "FIL", "INJ", "TIA",
+        "SEI", "TON", "TRX", "BCH", "ETC", "POL", "MATIC"
+    };
+
+    public static bool TryGetBaseAsset(string symbol, out string baseAsset)
+    {
+        baseAsset = string.Empty;
         if (string.IsNullOrWhiteSpace(symbol))
         {
             return false;
         }
 
         var upper = symbol.Trim().ToUpperInvariant();
-        foreach (var baseAsset in MajorBases)
+        if (upper.EndsWith("USDT", StringComparison.Ordinal) && upper.Length > 4)
         {
-            if (upper.StartsWith(baseAsset, StringComparison.Ordinal) &&
-                (upper.EndsWith("USDT", StringComparison.Ordinal) || upper.EndsWith("USDC", StringComparison.Ordinal)))
-            {
-                return true;
-            }
+            baseAsset = upper[..^4];
+            return true;
+        }
+
+        if (upper.EndsWith("USDC", StringComparison.Ordinal) && upper.Length > 4)
+        {
+            baseAsset = upper[..^4];
+            return true;
         }
 
         return false;
     }
 
-    public static decimal GetMinQuoteVolume24h(string symbol) =>
-        IsMajorSymbol(symbol) ? MajorMinQuoteVolume24h : AltMinQuoteVolume24h;
+    public static bool IsMajorSymbol(string symbol) =>
+        TryGetBaseAsset(symbol, out var baseAsset) && CoreBases.Contains(baseAsset);
 
-    public static decimal GetMinRelativeVolume(string symbol) =>
-        IsMajorSymbol(symbol) ? MajorMinRelativeVolume : AltMinRelativeVolume;
+    public static bool IsAutopilotAllowedSymbol(string symbol) =>
+        TryGetBaseAsset(symbol, out var baseAsset) &&
+        AutopilotBases.Contains(baseAsset) &&
+        !baseAsset.StartsWith("1000", StringComparison.Ordinal);
+
+    public static decimal GetMinQuoteVolume24h(string symbol)
+    {
+        if (!TryGetBaseAsset(symbol, out var baseAsset))
+        {
+            return AltMinQuoteVolume24h;
+        }
+
+        if (CoreBases.Contains(baseAsset))
+        {
+            return CoreMinQuoteVolume24h;
+        }
+
+        if (AutopilotBases.Contains(baseAsset))
+        {
+            return MidMinQuoteVolume24h;
+        }
+
+        return AltMinQuoteVolume24h;
+    }
+
+    public static decimal GetMinRelativeVolume(string symbol)
+    {
+        if (!TryGetBaseAsset(symbol, out var baseAsset))
+        {
+            return AltMinRelativeVolume;
+        }
+
+        if (CoreBases.Contains(baseAsset))
+        {
+            return CoreMinRelativeVolume;
+        }
+
+        if (AutopilotBases.Contains(baseAsset))
+        {
+            return MidMinRelativeVolume;
+        }
+
+        return AltMinRelativeVolume;
+    }
 
     public static bool PassesLiquidityAndVolume(string symbol, MarketTicker ticker, TechnicalMarketSnapshot technical) =>
         ticker.QuoteVolume24h >= GetMinQuoteVolume24h(symbol) &&
