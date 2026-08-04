@@ -938,7 +938,7 @@ public sealed class BotService(
                     else if (!technical5mBySymbol.TryGetValue(activeSymbol, out var tf5) ||
                              !technical15mBySymbol.TryGetValue(activeSymbol, out var tf15))
                     {
-                        reason = "Sin datos 5m/15m para confirmacion multi-timeframe.";
+                        reason = "Sin datos 15m para confirmacion de tendencia.";
                     }
                     else if (!signals.ShouldBuy(activeTechnical))
                     {
@@ -946,7 +946,7 @@ public sealed class BotService(
                     }
                     else if (!signals.PassesMultiTimeframeTrend(tf5, tf15))
                     {
-                        reason = "Bloqueado por confirmacion multi-timeframe (5m/15m).";
+                        reason = "Bloqueado por tendencia 15m (EMA rapida debajo de la lenta).";
                     }
                     else
                     {
