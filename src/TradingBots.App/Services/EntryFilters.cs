@@ -3,26 +3,23 @@ using TradingBots.App.Models;
 namespace TradingBots.App.Services;
 
 /// <summary>
-/// Liquidez/volumen y universo AutoPilot.
-/// AutoPilot solo opera bases liquidas (majors + mid-caps); evita alts iliquidos que nunca pasan el tick.
+/// Liquidez y universo AutoPilot.
+/// En testnet Live el RelVol 1m silenciaba incluso BTC: para simbolos AutoPilot solo exigimos volumen 24h.
 /// </summary>
 public static class EntryFilters
 {
-    private const decimal CoreMinQuoteVolume24h = 250_000m;
-    private const decimal MidMinQuoteVolume24h = 400_000m;
+    private const decimal CoreMinQuoteVolume24h = 200_000m;
+    private const decimal MidMinQuoteVolume24h = 300_000m;
     private const decimal AltMinQuoteVolume24h = 750_000m;
 
-    private const decimal CoreMinRelativeVolume = 0.15m;
-    private const decimal MidMinRelativeVolume = 0.22m;
-    private const decimal AltMinRelativeVolume = 0.35m;
+    /// <summary>Solo aplica a simbolos fuera del universo AutoPilot.</summary>
+    private const decimal AltMinRelativeVolume = 0.30m;
 
-    /// <summary>Nucleo: umbrales mas permisivos.</summary>
     private static readonly HashSet<string> CoreBases = new(StringComparer.OrdinalIgnoreCase)
     {
         "BTC", "ETH", "SOL", "BNB", "XRP", "ADA", "DOGE"
     };
 
-    /// <summary>Universo permitido en AutoPilot (Pullback-only). Fuera de esto no se crean/reactivanslots.</summary>
     private static readonly HashSet<string> AutopilotBases = new(StringComparer.OrdinalIgnoreCase)
     {
         "BTC", "ETH", "SOL", "BNB", "XRP", "ADA", "DOGE", "LINK", "AVAX", "LTC", "DOT",
@@ -82,29 +79,23 @@ public static class EntryFilters
         return AltMinQuoteVolume24h;
     }
 
-    public static decimal GetMinRelativeVolume(string symbol)
+    /// <summary>
+    /// RelVol hard-gate desactivado en universo AutoPilot (0 = no exige).
+    /// Fuera de AutoPilot se mantiene un minimo blando para no abrir basura manual.
+    /// </summary>
+    public static decimal GetMinRelativeVolume(string symbol) =>
+        IsAutopilotAllowedSymbol(symbol) ? 0m : AltMinRelativeVolume;
+
+    public static bool PassesLiquidityAndVolume(string symbol, MarketTicker ticker, TechnicalMarketSnapshot technical)
     {
-        if (!TryGetBaseAsset(symbol, out var baseAsset))
+        if (ticker.QuoteVolume24h < GetMinQuoteVolume24h(symbol))
         {
-            return AltMinRelativeVolume;
+            return false;
         }
 
-        if (CoreBases.Contains(baseAsset))
-        {
-            return CoreMinRelativeVolume;
-        }
-
-        if (AutopilotBases.Contains(baseAsset))
-        {
-            return MidMinRelativeVolume;
-        }
-
-        return AltMinRelativeVolume;
+        var minRel = GetMinRelativeVolume(symbol);
+        return minRel <= 0m || technical.RelativeVolume >= minRel;
     }
-
-    public static bool PassesLiquidityAndVolume(string symbol, MarketTicker ticker, TechnicalMarketSnapshot technical) =>
-        ticker.QuoteVolume24h >= GetMinQuoteVolume24h(symbol) &&
-        technical.RelativeVolume >= GetMinRelativeVolume(symbol);
 
     public static string? DescribeLiquidityBlock(string symbol, MarketTicker ticker, TechnicalMarketSnapshot technical)
     {
@@ -115,7 +106,7 @@ public static class EntryFilters
         }
 
         var minRel = GetMinRelativeVolume(symbol);
-        if (technical.RelativeVolume < minRel)
+        if (minRel > 0m && technical.RelativeVolume < minRel)
         {
             return $"Bloqueado por volumen relativo bajo (min {minRel:0.##}).";
         }

@@ -23,7 +23,7 @@ public sealed class MarketAdvisorService(
     private const decimal ChaseBlockChange24hPercent = 6m;
     private const decimal ChaseBlockRsi = 65m;
     /// <summary>Umbral BUY alineado a setups Pullback (antes 6.2 con score tipo Momentum).</summary>
-    private const decimal BuyScoreThreshold = 5.7m;
+    private const decimal BuyScoreThreshold = 5.2m;
     private const int MaxAdvisorCandidates = 48;
 
     private static readonly HashSet<string> AdvisorSymbolExclusions = new(StringComparer.Ordinal)
@@ -254,8 +254,8 @@ public sealed class MarketAdvisorService(
     {
         decimal score = 0m;
         if (t1.MacdLine > t1.MacdSignal && t1.MacdHistogram > t1.PreviousMacdHistogram) score += 1.2m;
-        if (t1.Rsi14 is >= 28m and <= 48m) score += 1.35m;
-        else if (t1.Rsi14 is > 48m and <= 55m) score += 0.35m;
+        if (t1.Rsi14 is >= 28m and <= 52m) score += 1.35m;
+        else if (t1.Rsi14 is > 52m and <= 58m) score += 0.35m;
         else if (t1.Rsi14 >= 65m) score -= 0.7m;
 
         // Dip moderado en 24h = oportunidad pullback; pumps fuertes se penalizan vía chase block.

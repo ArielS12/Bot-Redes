@@ -19,9 +19,9 @@ public sealed class AutoTraderService(
         "UUSDT", "UUSDC"
     };
 
-    private const decimal MinAdjustedBuyScore = 5.7m;
+    private const decimal MinAdjustedBuyScore = 5.2m;
     private const decimal MinSymbolBiasForStandardEntry = -0.25m;
-    private const decimal MinRawScoreWhenBiasNegative = 6.0m;
+    private const decimal MinRawScoreWhenBiasNegative = 5.5m;
     private const int SuggestionTtlMinutes = 10;
     private static readonly TimeSpan RecycleCooldownAfterOperationalStop = TimeSpan.FromSeconds(90);
     private static readonly TimeSpan IdleSlotReleaseWindow = TimeSpan.FromHours(48);

@@ -6,15 +6,17 @@ public sealed class PullbackStrategySignal : IStrategySignalProvider
 {
     public StrategyType Strategy => StrategyType.Pullback;
 
-    private const decimal MaxEntryRsi = 48m;
+    private const decimal MaxEntryRsi = 52m;
+    private const decimal MinEntryRsi = 22m;
 
     public bool ShouldBuy(TechnicalMarketSnapshot technical) =>
         technical.EmaFast >= technical.EmaSlow &&
-        technical.Rsi14 <= MaxEntryRsi &&
-        technical.MacdHistogram > technical.PreviousMacdHistogram;
+        technical.Rsi14 is >= MinEntryRsi and <= MaxEntryRsi &&
+        (technical.MacdHistogram > technical.PreviousMacdHistogram ||
+         (technical.MacdLine >= technical.MacdSignal && technical.Rsi14 <= 45m));
 
     public bool ShouldSell(TechnicalMarketSnapshot technical) =>
-        technical.Rsi14 >= 58m ||
+        technical.Rsi14 >= 62m ||
         technical.MacdLine < technical.MacdSignal;
 
     public decimal ScoreBuyCandidate(TechnicalMarketSnapshot technical) =>
@@ -22,8 +24,12 @@ public sealed class PullbackStrategySignal : IStrategySignalProvider
         (technical.MacdHistogram - technical.PreviousMacdHistogram) * 1000m +
         (technical.RelativeVolume * 5m);
 
-    public bool PassesMultiTimeframeTrend(TechnicalMarketSnapshot tf5, TechnicalMarketSnapshot tf15) =>
-        tf15.EmaFast >= tf15.EmaSlow && tf5.Rsi14 <= 62m;
+    /// <summary>Trend superior: solo 15m alcista (el RSI 5m era demasiado estricto en mercado lateral).</summary>
+    public bool PassesMultiTimeframeTrend(TechnicalMarketSnapshot tf5, TechnicalMarketSnapshot tf15)
+    {
+        _ = tf5;
+        return tf15.EmaFast >= tf15.EmaSlow;
+    }
 
     public string DescribeBuySignalGap(TechnicalMarketSnapshot t)
     {
@@ -32,14 +38,15 @@ public sealed class PullbackStrategySignal : IStrategySignalProvider
             return "Pullback 1m: EMA rapida debajo de la lenta.";
         }
 
-        if (t.Rsi14 > MaxEntryRsi)
+        if (t.Rsi14 < MinEntryRsi || t.Rsi14 > MaxEntryRsi)
         {
-            return $"Pullback 1m: RSI {t.Rsi14:0.#} no en zona de pullback (max {MaxEntryRsi:0}).";
+            return $"Pullback 1m: RSI {t.Rsi14:0.#} fuera de zona de pullback ({MinEntryRsi:0}-{MaxEntryRsi:0}).";
         }
 
-        if (t.MacdHistogram <= t.PreviousMacdHistogram)
+        if (!(t.MacdHistogram > t.PreviousMacdHistogram ||
+              (t.MacdLine >= t.MacdSignal && t.Rsi14 <= 45m)))
         {
-            return "Pullback 1m: histograma MACD sin expansion vs vela anterior.";
+            return "Pullback 1m: sin confirmacion MACD (expansion o linea>=signal con RSI<=45).";
         }
 
         return "Condicion de entrada 1m no cumplida.";
@@ -74,6 +81,7 @@ public sealed class PullbackStrategySignal : IStrategySignalProvider
 
     public string? DescribeLongTermRegimeFailure(LongTermRegimeSnapshot? regime)
     {
+        // Sin historial D1 no bloqueamos (testnet / sync incompleto).
         if (regime is null || !regime.HasData)
         {
             return null;
@@ -84,7 +92,7 @@ public sealed class PullbackStrategySignal : IStrategySignalProvider
             return $"Regimen D1: precio alto en rango 90d (percentil {regime.PricePercentileIn90d:0.#}).";
         }
 
-        if (!regime.DailyTrendUp && regime.LastClose < regime.DailyEma200 * 0.95m)
+        if (!regime.DailyTrendUp && regime.LastClose < regime.DailyEma200 * 0.93m)
         {
             return "Regimen D1: tendencia bajista fuerte (cierre muy por debajo de EMA200).";
         }
