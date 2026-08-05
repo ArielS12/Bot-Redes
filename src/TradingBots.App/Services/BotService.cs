@@ -38,7 +38,9 @@ public sealed class BotService(
     /// <summary>Coste estimado round-trip (fees+slippage) en basis points.</summary>
     private const decimal RoundTripCostBps = 20m;
     /// <summary>Beneficio minimo neto (%) para salidas tacticas / TP parcial.</summary>
-    private const decimal MinNetProfitToExitPercent = 0.35m;
+    private const decimal MinNetProfitToExitPercent = 0.50m;
+    /// <summary>Cooldown minimo tras cerrar en profit (anti-churn AutoPilot).</summary>
+    private const int MinCooldownMinutesAfterWinForAuto = 20;
     private const int ExecutionFailureCircuitThreshold = 3;
     private static readonly TimeSpan ExecutionFailureCircuitDuration = TimeSpan.FromMinutes(20);
     private const int MinClosedTradesForAdaptive = 100;
@@ -637,12 +639,21 @@ public sealed class BotService(
                     realized = decimal.Round(realized, 2);
                     bot.RealizedPnlUsdt += realized;
                     bot.ConsecutiveLossTrades = realized < 0m ? bot.ConsecutiveLossTrades + 1 : 0;
-                    if (realized < 0m && bot.CooldownMinutesAfterLoss > 0)
+                    var positionFullyClosed = bot.PositionQuantity - fill.ExecutedQuantity <= 0m;
+                    if (positionFullyClosed && bot.IsAutoManaged)
+                    {
+                        var cooldownMin = realized < 0m
+                            ? Math.Max(bot.CooldownMinutesAfterLoss, 25)
+                            : MinCooldownMinutesAfterWinForAuto;
+                        bot.CooldownSymbol = activeSymbol;
+                        bot.CooldownUntilUtc = DateTime.UtcNow.AddMinutes(cooldownMin);
+                    }
+                    else if (realized < 0m && bot.CooldownMinutesAfterLoss > 0)
                     {
                         bot.CooldownSymbol = activeSymbol;
                         bot.CooldownUntilUtc = DateTime.UtcNow.AddMinutes(bot.CooldownMinutesAfterLoss);
                     }
-                    else if (realized >= 0m)
+                    else if (realized >= 0m && !bot.IsAutoManaged)
                     {
                         bot.CooldownSymbol = string.Empty;
                         bot.CooldownUntilUtc = null;
@@ -717,8 +728,20 @@ public sealed class BotService(
             if (bot.RealizedPnlUsdt <= -Math.Abs(bot.MaxDailyLossUsdt))
             {
                 bot.State = BotState.Stopped;
-                bot.LastExecutionError = "Bot pausado por perdida diaria maxima (AutoPilot).";
-                logger.LogWarning("Bot {BotName} detenido por max daily loss.", bot.Name);
+                bot.LastExecutionError = "Bot pausado por perdida acumulada maxima (AutoPilot).";
+                logger.LogWarning("Bot {BotName} detenido por max accumulated loss.", bot.Name);
+            }
+
+            var todayStart = DateTime.UtcNow.Date;
+            var dailyPnl = recentSellTrades
+                .Where(x => x.BotId == bot.Id && x.ExecutedAtUtc >= todayStart)
+                .Sum(x => x.RealizedPnlUsdt);
+            if (bot.IsAutoManaged && dailyPnl <= -Math.Abs(bot.MaxDailyLossUsdt))
+            {
+                bot.State = BotState.Stopped;
+                bot.LastExecutionError =
+                    $"Bot pausado por perdida diaria maxima ({dailyPnl:0.##} USDT hoy, limite {bot.MaxDailyLossUsdt:0.##}).";
+                logger.LogWarning("Bot {BotName} detenido por max daily loss. DailyPnl={DailyPnl}", bot.Name, dailyPnl);
             }
         }
 

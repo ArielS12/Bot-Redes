@@ -19,15 +19,17 @@ public sealed class AutoTraderService(
         "UUSDT", "UUSDC"
     };
 
-    private const decimal MinAdjustedBuyScore = 5.2m;
-    private const decimal MinSymbolBiasForStandardEntry = -0.25m;
-    private const decimal MinRawScoreWhenBiasNegative = 5.5m;
+    private const decimal MinAdjustedBuyScore = 5.9m;
+    private const decimal MinSymbolBiasForStandardEntry = -0.20m;
+    private const decimal MinRawScoreWhenBiasNegative = 6.2m;
     private const int SuggestionTtlMinutes = 10;
     private static readonly TimeSpan RecycleCooldownAfterOperationalStop = TimeSpan.FromSeconds(90);
     private static readonly TimeSpan IdleSlotReleaseWindow = TimeSpan.FromHours(48);
 
     private const int SymbolQuarantineLookbackDays = 14;
-    private const int MinSellsForSymbolQuarantine = 8;
+    private const int MinSellsForSymbolQuarantine = 6;
+    private const int MinSellsForFastQuarantine = 3;
+    private const int FastQuarantineLookbackHours = 24;
     private const decimal QuarantineAvgLossToWinRatio = 1.2m;
     private const int MaxAutoBotsHardCap = 15;
     private const decimal MinNetProfitFloor = 0.35m;
@@ -209,8 +211,8 @@ public sealed class AutoTraderService(
                 break;
             }
 
-            const decimal sl = 1.5m;
-            const decimal tp = 3.8m;
+            const decimal sl = 1.2m;
+            const decimal tp = 4.2m;
             var strategy = StrategyType.Pullback;
 
             var recyclable = existingAutoBots
@@ -242,10 +244,10 @@ public sealed class AutoTraderService(
                 recyclable.TrailingActivationPercent = Math.Max(1.5m, MinNetProfitFloor);
                 recyclable.TrailingStopPercent = 0.9m;
                 recyclable.MaxHoldingMinutes = 360;
-                recyclable.MaxDailyLossUsdt = 4m;
+                recyclable.MaxDailyLossUsdt = 2m;
                 recyclable.MaxExposurePercent = 100m;
-                recyclable.CooldownMinutesAfterLoss = 5;
-                recyclable.MaxConsecutiveLossTrades = 5;
+                recyclable.CooldownMinutesAfterLoss = 30;
+                recyclable.MaxConsecutiveLossTrades = 3;
                 recyclable.Symbols = [candidate.Symbol];
                 recyclable.State = BotState.Running;
                 recyclable.IsAutoManaged = true;
@@ -277,10 +279,10 @@ public sealed class AutoTraderService(
                 TrailingActivationPercent = Math.Max(1.5m, MinNetProfitFloor),
                 TrailingStopPercent = 0.9m,
                 MaxHoldingMinutes = 360,
-                MaxDailyLossUsdt = 4m,
+                MaxDailyLossUsdt = 2m,
                 MaxExposurePercent = 100m,
-                CooldownMinutesAfterLoss = 5,
-                MaxConsecutiveLossTrades = 5,
+                CooldownMinutesAfterLoss = 30,
+                MaxConsecutiveLossTrades = 3,
                 Symbols = [candidate.Symbol],
                 State = BotState.Running,
                 IsAutoManaged = true,
@@ -356,6 +358,22 @@ public sealed class AutoTraderService(
 
     private async Task<HashSet<string>> BuildSymbolQuarantineSetAsync(DateTime nowUtc)
     {
+        var set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        var fastFrom = nowUtc.AddHours(-FastQuarantineLookbackHours);
+        var fastRows = await dbContext.Trades
+            .AsNoTracking()
+            .Where(x => x.Side == "SELL" && x.ExecutedAtUtc >= fastFrom)
+            .Select(x => new { x.Symbol, x.RealizedPnlUsdt })
+            .ToListAsync();
+        foreach (var g in fastRows.GroupBy(x => x.Symbol, StringComparer.OrdinalIgnoreCase))
+        {
+            if (g.Count() >= MinSellsForFastQuarantine && g.Sum(x => x.RealizedPnlUsdt) < 0m)
+            {
+                set.Add(g.Key);
+            }
+        }
+
         var fromUtc = nowUtc.AddDays(-SymbolQuarantineLookbackDays);
         var rows = await dbContext.Trades
             .AsNoTracking()
@@ -363,7 +381,6 @@ public sealed class AutoTraderService(
             .Select(x => new { x.Symbol, x.RealizedPnlUsdt })
             .ToListAsync();
 
-        var set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var g in rows.GroupBy(x => x.Symbol, StringComparer.OrdinalIgnoreCase))
         {
             if (g.Count() < MinSellsForSymbolQuarantine)

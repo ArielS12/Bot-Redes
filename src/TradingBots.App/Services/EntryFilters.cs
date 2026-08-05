@@ -3,28 +3,19 @@ using TradingBots.App.Models;
 namespace TradingBots.App.Services;
 
 /// <summary>
-/// Liquidez y universo AutoPilot.
-/// En testnet Live el RelVol 1m silenciaba incluso BTC: para simbolos AutoPilot solo exigimos volumen 24h.
+/// Liquidez y universo AutoPilot: solo nucleo liquido (7 bases) para evitar churn en alts.
 /// </summary>
 public static class EntryFilters
 {
     private const decimal CoreMinQuoteVolume24h = 200_000m;
-    private const decimal MidMinQuoteVolume24h = 300_000m;
     private const decimal AltMinQuoteVolume24h = 750_000m;
 
-    /// <summary>Solo aplica a simbolos fuera del universo AutoPilot.</summary>
     private const decimal AltMinRelativeVolume = 0.30m;
 
+    /// <summary>Universo AutoPilot = solo majors de alta liquidez.</summary>
     private static readonly HashSet<string> CoreBases = new(StringComparer.OrdinalIgnoreCase)
     {
         "BTC", "ETH", "SOL", "BNB", "XRP", "ADA", "DOGE"
-    };
-
-    private static readonly HashSet<string> AutopilotBases = new(StringComparer.OrdinalIgnoreCase)
-    {
-        "BTC", "ETH", "SOL", "BNB", "XRP", "ADA", "DOGE", "LINK", "AVAX", "LTC", "DOT",
-        "ATOM", "NEAR", "APT", "ARB", "OP", "SUI", "UNI", "AAVE", "FIL", "INJ", "TIA",
-        "SEI", "TON", "TRX", "BCH", "ETC", "POL", "MATIC"
     };
 
     public static bool TryGetBaseAsset(string symbol, out string baseAsset)
@@ -54,35 +45,11 @@ public static class EntryFilters
     public static bool IsMajorSymbol(string symbol) =>
         TryGetBaseAsset(symbol, out var baseAsset) && CoreBases.Contains(baseAsset);
 
-    public static bool IsAutopilotAllowedSymbol(string symbol) =>
-        TryGetBaseAsset(symbol, out var baseAsset) &&
-        AutopilotBases.Contains(baseAsset) &&
-        !baseAsset.StartsWith("1000", StringComparison.Ordinal);
+    public static bool IsAutopilotAllowedSymbol(string symbol) => IsMajorSymbol(symbol);
 
-    public static decimal GetMinQuoteVolume24h(string symbol)
-    {
-        if (!TryGetBaseAsset(symbol, out var baseAsset))
-        {
-            return AltMinQuoteVolume24h;
-        }
+    public static decimal GetMinQuoteVolume24h(string symbol) =>
+        IsMajorSymbol(symbol) ? CoreMinQuoteVolume24h : AltMinQuoteVolume24h;
 
-        if (CoreBases.Contains(baseAsset))
-        {
-            return CoreMinQuoteVolume24h;
-        }
-
-        if (AutopilotBases.Contains(baseAsset))
-        {
-            return MidMinQuoteVolume24h;
-        }
-
-        return AltMinQuoteVolume24h;
-    }
-
-    /// <summary>
-    /// RelVol hard-gate desactivado en universo AutoPilot (0 = no exige).
-    /// Fuera de AutoPilot se mantiene un minimo blando para no abrir basura manual.
-    /// </summary>
     public static decimal GetMinRelativeVolume(string symbol) =>
         IsAutopilotAllowedSymbol(symbol) ? 0m : AltMinRelativeVolume;
 

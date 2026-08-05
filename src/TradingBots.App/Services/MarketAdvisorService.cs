@@ -22,8 +22,8 @@ public sealed class MarketAdvisorService(
     private const decimal MaxMoverChange24hPercent = 5.5m;
     private const decimal ChaseBlockChange24hPercent = 6m;
     private const decimal ChaseBlockRsi = 65m;
-    /// <summary>Umbral BUY alineado a setups Pullback (antes 6.2 con score tipo Momentum).</summary>
-    private const decimal BuyScoreThreshold = 5.2m;
+    /// <summary>Umbral BUY alineado a setups Pullback en nucleo liquido.</summary>
+    private const decimal BuyScoreThreshold = 5.8m;
     private const int MaxAdvisorCandidates = 48;
 
     private static readonly HashSet<string> AdvisorSymbolExclusions = new(StringComparer.Ordinal)
@@ -42,6 +42,7 @@ public sealed class MarketAdvisorService(
         var tradable = marketSnapshot
             .Where(IsTradableQuoteAsset)
             .Where(x => !AdvisorSymbolExclusions.Contains(x.Symbol))
+            .Where(x => EntryFilters.IsAutopilotAllowedSymbol(x.Symbol))
             .ToList();
         var candidates = BuildCandidateUniverse(tradable);
         if (candidates.Count == 0)

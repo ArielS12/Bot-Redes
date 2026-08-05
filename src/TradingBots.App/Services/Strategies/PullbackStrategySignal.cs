@@ -6,20 +6,15 @@ public sealed class PullbackStrategySignal : IStrategySignalProvider
 {
     public StrategyType Strategy => StrategyType.Pullback;
 
-    private const decimal MaxEntryRsi = 52m;
-    private const decimal MinEntryRsi = 22m;
+    private const decimal MaxEntryRsi = 46m;
+    private const decimal MinEntryRsi = 24m;
 
-    /// <summary>
-    /// Pullback = dip en tendencia superior: RSI en zona baja + MACD girando.
-    /// No exigir EMA rapida>=lenta en 1m (eso es continuation, no pullback).
-    /// </summary>
     public bool ShouldBuy(TechnicalMarketSnapshot technical) =>
         technical.Rsi14 is >= MinEntryRsi and <= MaxEntryRsi &&
-        (technical.MacdHistogram > technical.PreviousMacdHistogram ||
-         technical.MacdLine >= technical.MacdSignal);
+        technical.MacdHistogram > technical.PreviousMacdHistogram;
 
     public bool ShouldSell(TechnicalMarketSnapshot technical) =>
-        technical.Rsi14 >= 62m ||
+        technical.Rsi14 >= 60m ||
         technical.MacdLine < technical.MacdSignal;
 
     public decimal ScoreBuyCandidate(TechnicalMarketSnapshot technical) =>
@@ -27,12 +22,8 @@ public sealed class PullbackStrategySignal : IStrategySignalProvider
         (technical.MacdHistogram - technical.PreviousMacdHistogram) * 1000m +
         (technical.RelativeVolume * 5m);
 
-    /// <summary>Confirmacion de tendencia en 15m; el dip ocurre en 1m.</summary>
-    public bool PassesMultiTimeframeTrend(TechnicalMarketSnapshot tf5, TechnicalMarketSnapshot tf15)
-    {
-        _ = tf5;
-        return tf15.EmaFast >= tf15.EmaSlow;
-    }
+    public bool PassesMultiTimeframeTrend(TechnicalMarketSnapshot tf5, TechnicalMarketSnapshot tf15) =>
+        tf15.EmaFast >= tf15.EmaSlow && tf5.Rsi14 <= 58m;
 
     public string DescribeBuySignalGap(TechnicalMarketSnapshot t)
     {
@@ -41,9 +32,9 @@ public sealed class PullbackStrategySignal : IStrategySignalProvider
             return $"Pullback 1m: RSI {t.Rsi14:0.#} fuera de zona de pullback ({MinEntryRsi:0}-{MaxEntryRsi:0}).";
         }
 
-        if (!(t.MacdHistogram > t.PreviousMacdHistogram || t.MacdLine >= t.MacdSignal))
+        if (t.MacdHistogram <= t.PreviousMacdHistogram)
         {
-            return "Pullback 1m: sin giro MACD (histograma expandiendo o linea>=signal).";
+            return "Pullback 1m: histograma MACD sin expansion vs vela anterior.";
         }
 
         return "Condicion de entrada 1m no cumplida.";
