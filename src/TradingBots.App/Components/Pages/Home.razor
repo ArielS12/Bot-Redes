@@ -33,7 +33,7 @@ else
             <div class="card"><div class="card-body"><h6>Budget total</h6><h3>@_summary.TotalBudget.ToString("0.00") USDT</h3></div></div>
         </div>
         <div class="col-md-3">
-            <div class="card"><div class="card-body"><h6>PnL total</h6><h3 class="@PnlClass(_summary.TotalPnl)">@_summary.TotalPnl.ToString("0.00") USDT</h3></div></div>
+            <div class="card"><div class="card-body"><h6>PnL total (cerrado)</h6><h3 class="@PnlClass(_summary.TotalPnl)">@_summary.TotalPnl.ToString("0.00") USDT</h3></div></div>
         </div>
     </div>
     <div class="alert alert-info">
@@ -234,9 +234,10 @@ else
     }
 
     <h4 class="mt-4">Profit/Perdida por bot</h4>
+    <p class="small text-muted mb-2">Solo PnL realizado al cerrar ventas (SELL). Las posiciones abiertas no cuentan hasta que se vendan.</p>
     <table class="table table-sm table-striped">
         <thead>
-            <tr><th>Bot</th><th>Hoy</th><th>Acumulado</th></tr>
+            <tr><th>Bot</th><th>Hoy (cerrado)</th><th>Acumulado (cerrado)</th></tr>
         </thead>
         <tbody>
             @foreach (var p in _summary.BotPerformance)

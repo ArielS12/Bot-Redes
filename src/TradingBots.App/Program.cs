@@ -775,19 +775,20 @@ app.MapGet("/api/bots/performance", async (string? botIds, AppDbContext db) =>
     }
 
     var idSet = bots.Select(x => x.Id).ToHashSet();
-    var tradesToday = await db.Trades
-        .Where(x => x.ExecutedAtUtc >= todayStart && idSet.Contains(x.BotId))
+    // Solo SELL: el PnL se materializa al cerrar; no mezclar mark-to-market de posiciones abiertas.
+    var sellsToday = await db.Trades
+        .Where(x => x.ExecutedAtUtc >= todayStart && idSet.Contains(x.BotId) && x.Side == "SELL")
         .ToListAsync();
 
-    var dailyMap = tradesToday
+    var dailyMap = sellsToday
         .GroupBy(x => x.BotId)
         .ToDictionary(g => g.Key, g => g.Sum(x => x.RealizedPnlUsdt));
     var data = bots.Select(b => new BotPerformanceItem
     {
         BotId = b.Id,
         BotName = b.Name,
-        DailyPnlUsdt = (dailyMap.TryGetValue(b.Id, out var v) ? v : 0m) + b.UnrealizedPnlUsdt,
-        TotalPnlUsdt = b.RealizedPnlUsdt + b.UnrealizedPnlUsdt
+        DailyPnlUsdt = dailyMap.TryGetValue(b.Id, out var v) ? v : 0m,
+        TotalPnlUsdt = b.RealizedPnlUsdt
     });
     return Results.Ok(data);
 });
@@ -999,10 +1000,11 @@ app.MapGet("/api/dashboard/summary", async (IBotService botService, IBinanceMark
     var market = allSymbols.Count == 0 ? [] : await marketService.GetMarketOverviewAsync(allSymbols);
 
     var todayStart = DateTime.UtcNow.Date;
-    var tradesToday = await db.Trades
-        .Where(x => x.ExecutedAtUtc >= todayStart)
+    // Solo cierres SELL: no mostrar mark-to-market de compras abiertas.
+    var sellsToday = await db.Trades
+        .Where(x => x.ExecutedAtUtc >= todayStart && x.Side == "SELL")
         .ToListAsync();
-    var dailyMap = tradesToday
+    var dailyMap = sellsToday
         .GroupBy(x => x.BotId)
         .ToDictionary(g => g.Key, g => g.Sum(x => x.RealizedPnlUsdt));
 
@@ -1011,7 +1013,7 @@ app.MapGet("/api/dashboard/summary", async (IBotService botService, IBinanceMark
         TotalBots = bots.Count,
         RunningBots = bots.Count(x => x.State == BotState.Running),
         TotalBudget = bots.Sum(x => x.BudgetUsdt),
-        TotalPnl = bots.Sum(x => x.RealizedPnlUsdt + x.UnrealizedPnlUsdt),
+        TotalPnl = bots.Sum(x => x.RealizedPnlUsdt),
         Market = market,
         Suggestions = await advisorService.GetLatestSuggestionsAsync(),
         LastAutoTraderRunUtc = runtimeStatus.LastAutoTraderRunUtc,
@@ -1028,8 +1030,8 @@ app.MapGet("/api/dashboard/summary", async (IBotService botService, IBinanceMark
         {
             BotId = b.Id,
             BotName = b.Name,
-            DailyPnlUsdt = (dailyMap.TryGetValue(b.Id, out var v) ? v : 0m) + b.UnrealizedPnlUsdt,
-            TotalPnlUsdt = b.RealizedPnlUsdt + b.UnrealizedPnlUsdt
+            DailyPnlUsdt = dailyMap.TryGetValue(b.Id, out var v) ? v : 0m,
+            TotalPnlUsdt = b.RealizedPnlUsdt
         }).OrderByDescending(x => x.TotalPnlUsdt).ToList()
     };
 
