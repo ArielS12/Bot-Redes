@@ -39,6 +39,12 @@ public sealed class BotService(
     private const decimal RoundTripCostBps = 20m;
     /// <summary>Beneficio minimo neto (%) para salidas tacticas / TP parcial.</summary>
     private const decimal MinNetProfitToExitPercent = 0.50m;
+    /// <summary>Techo duro: nunca diferir SL por debajo de este PnL %.</summary>
+    private const decimal StopLossHardFloorPercent = -2.0m;
+    /// <summary>Minutos maximos de gracia tras el primer toque de SL si hay esperanza de rebote.</summary>
+    private const int StopLossDeferGraceMinutes = 15;
+    /// <summary>Distancia maxima a Support90d (%) para considerar "cerca de soporte".</summary>
+    private const decimal StopLossDeferNearSupportPercent = 1.5m;
     /// <summary>Cooldown minimo tras cerrar en profit (anti-churn AutoPilot).</summary>
     private const int MinCooldownMinutesAfterWinForAuto = 20;
     private const int ExecutionFailureCircuitThreshold = 3;
@@ -48,6 +54,8 @@ public sealed class BotService(
     private static readonly TimeSpan AutoScaleCooldown = TimeSpan.FromHours(6);
     private static readonly ConcurrentDictionary<Guid, int> BotExecutionFailures = new();
     private static readonly ConcurrentDictionary<string, DateTime> SymbolCircuitOpenUntilUtc = new(StringComparer.OrdinalIgnoreCase);
+    /// <summary>Gracia SL: clave botId|openedAt -> instante UTC hasta el que se puede diferir.</summary>
+    private static readonly ConcurrentDictionary<string, DateTime> StopLossGraceUntilUtc = new(StringComparer.Ordinal);
 
     public async Task<IReadOnlyCollection<TradingBot>> GetBotsAsync() =>
         await dbContext.Bots
@@ -232,6 +240,7 @@ public sealed class BotService(
 
         bot.PositionQuantity = 0m;
         bot.UnrealizedPnlUsdt = 0m;
+        ClearStopLossGrace(bot);
         bot.AverageEntryPrice = 0m;
         bot.PositionSymbol = string.Empty;
         bot.PositionOpenedAtUtc = null;
@@ -581,8 +590,26 @@ public sealed class BotService(
             }
             else if (bot.PositionQuantity > 0m)
             {
+                string stopLossDeferReason = string.Empty;
+                var stopLossExit = stopLossHit &&
+                                   !ShouldDeferStopLoss(
+                                       bot,
+                                       pnlPct,
+                                       activeStructure,
+                                       activeTechnical,
+                                       out stopLossDeferReason);
+                if (stopLossHit && !stopLossExit)
+                {
+                    bot.LastExecutionError = stopLossDeferReason;
+                    logger.LogInformation(
+                        "Bot {BotName}: SL diferido ({Reason}). PnL={PnlPct:0.##}%",
+                        bot.Name,
+                        stopLossDeferReason,
+                        pnlPct);
+                }
+
                 // Salidas de riesgo (SL/time-stop/contexto roto/breakeven) deben poder ejecutarse incluso sin profit.
-                var riskExit = stopLossHit || breakevenStopHit || timeStopHit || contextDefensiveExitHit;
+                var riskExit = stopLossExit || breakevenStopHit || timeStopHit || contextDefensiveExitHit;
                 // Salidas tacticas: exigen beneficio neto sobre coste round-trip estimado.
                 var tacticalExit = netProfitableEnough &&
                                    (sellSignal || takeProfitHit || trailingStopHit || pnlPct >= bot.TakeProfit2Percent);
@@ -661,6 +688,7 @@ public sealed class BotService(
                     bot.PositionQuantity = decimal.Round(Math.Max(0m, bot.PositionQuantity - fill.ExecutedQuantity), 8, MidpointRounding.ToZero);
                     if (bot.PositionQuantity <= 0m)
                     {
+                        ClearStopLossGrace(bot);
                         bot.UnrealizedPnlUsdt = 0m;
                         bot.PositionQuantity = 0m;
                         bot.AverageEntryPrice = 0m;
@@ -869,17 +897,21 @@ public sealed class BotService(
             var sellSignal = signals.ShouldSell(activeTechnical);
             var takeProfitHit = bot.PositionQuantity > 0m && bot.AverageEntryPrice > 0m &&
                                 ((activePrice - bot.AverageEntryPrice) / bot.AverageEntryPrice) * 100m >= bot.TakeProfitPercent;
-            var stopLossHit = bot.PositionQuantity > 0m && bot.AverageEntryPrice > 0m &&
-                              ((activePrice - bot.AverageEntryPrice) / bot.AverageEntryPrice) * 100m <= -bot.StopLossPercent;
             var pnlPct = bot.PositionQuantity > 0m && bot.AverageEntryPrice > 0m
                 ? ((activePrice - bot.AverageEntryPrice) / bot.AverageEntryPrice) * 100m
                 : 0m;
+            var effectiveStopPctDiag = ComputeEffectiveStopLossPercent(bot, activeTechnical);
+            var stopLossHit = bot.PositionQuantity > 0m && bot.AverageEntryPrice > 0m &&
+                              pnlPct <= -effectiveStopPctDiag;
             var trailingArmed = pnlPct >= bot.TrailingActivationPercent && bot.PeakPriceSinceEntry > 0m;
             var timeStopHit = bot.PositionOpenedAtUtc is not null &&
                               bot.MaxHoldingMinutes > 0 &&
                               DateTime.UtcNow >= bot.PositionOpenedAtUtc.Value.AddMinutes(bot.MaxHoldingMinutes);
             var activeStructure = structureBySymbol.GetValueOrDefault(activeSymbol);
             var contextDefensiveExitHit = ShouldMarketStructureDefensiveExit(activeStructure, pnlPct);
+            var stopLossDeferReason = string.Empty;
+            var stopLossDeferred = stopLossHit &&
+                                   ShouldDeferStopLoss(bot, pnlPct, activeStructure, activeTechnical, out stopLossDeferReason);
             var tp1Ready = !bot.TakeProfit1Taken && pnlPct >= bot.TakeProfit1Percent;
             var tp2Ready = pnlPct >= bot.TakeProfit2Percent;
             var buyCandidate = selected
@@ -987,6 +1019,11 @@ public sealed class BotService(
                     reason = $"En cooldown por perdida hasta {bot.CooldownUntilUtc:O}.";
                 }
             }
+            else if (stopLossDeferred)
+            {
+                label = "SL_DIFERIDO";
+                reason = stopLossDeferReason;
+            }
             else if (stopLossHit || timeStopHit || contextDefensiveExitHit)
             {
                 label = "SELL_LISTO";
@@ -1017,7 +1054,16 @@ public sealed class BotService(
                 SignalLabel = label,
                 Reason = string.IsNullOrWhiteSpace(bot.LastExecutionError) ? reason : $"{reason} Ultimo error: {bot.LastExecutionError}",
                 ActiveSymbol = activeSymbol,
-                ExitState = BuildExitState(bot, tp1Ready, tp2Ready, trailingArmed, timeStopHit, sellSignal, stopLossHit, contextDefensiveExitHit)
+                ExitState = BuildExitState(
+                    bot,
+                    tp1Ready,
+                    tp2Ready,
+                    trailingArmed,
+                    timeStopHit,
+                    sellSignal,
+                    stopLossHit && !stopLossDeferred,
+                    contextDefensiveExitHit,
+                    stopLossDeferred)
             });
         }
 
@@ -1132,7 +1178,8 @@ public sealed class BotService(
         bool timeStopHit,
         bool sellSignal,
         bool stopLossHit,
-        bool contextDefensiveExitHit)
+        bool contextDefensiveExitHit,
+        bool stopLossDeferred = false)
     {
         if (bot.PositionQuantity <= 0m)
         {
@@ -1144,10 +1191,124 @@ public sealed class BotService(
         if (tp2Ready) states.Add("TP2_LISTO");
         if (trailingArmed) states.Add("TRAILING_ARMADO");
         if (timeStopHit) states.Add("TIME_STOP_LISTO");
+        if (stopLossDeferred) states.Add("SL_DIFERIDO");
         if (stopLossHit) states.Add("STOP_LOSS_LISTO");
         if (contextDefensiveExitHit) states.Add("CONTEXTO_DEFENSIVO");
         if (sellSignal) states.Add("SENAL_SALIDA");
         return states.Count == 0 ? "MANTENER" : string.Join(" | ", states);
+    }
+
+    /// <summary>
+    /// Diferir SL si hay esperanza de rebote (estructura 30-90d + tecnicos 1m),
+    /// con gracia de 15 min y techo duro -2%.
+    /// </summary>
+    private static bool ShouldDeferStopLoss(
+        TradingBot bot,
+        decimal pnlPct,
+        MarketStructureSnapshot? structure,
+        TechnicalMarketSnapshot? technical,
+        out string reason)
+    {
+        reason = string.Empty;
+        if (pnlPct <= StopLossHardFloorPercent)
+        {
+            ClearStopLossGrace(bot);
+            reason = $"SL forzado: techo duro {StopLossHardFloorPercent:0.##}% alcanzado ({pnlPct:0.##}%).";
+            return false;
+        }
+
+        if (!HasStopLossBounceHope(structure, technical, out var hopeDetail))
+        {
+            reason = $"SL sin diferir: sin esperanza de rebote ({hopeDetail}).";
+            return false;
+        }
+
+        var now = DateTime.UtcNow;
+        var key = BuildStopLossGraceKey(bot);
+        var graceUntil = StopLossGraceUntilUtc.AddOrUpdate(
+            key,
+            _ => now.AddMinutes(StopLossDeferGraceMinutes),
+            (_, existing) => existing);
+
+        if (now >= graceUntil)
+        {
+            reason = $"SL sin diferir: gracia de {StopLossDeferGraceMinutes} min agotada ({hopeDetail}).";
+            return false;
+        }
+
+        reason =
+            $"SL tocado ({pnlPct:0.##}%); diferido por evaluacion historica/tecnica hasta {graceUntil:HH:mm:ss} UTC " +
+            $"o {StopLossHardFloorPercent:0.##}% ({hopeDetail}).";
+        return true;
+    }
+
+    private static bool HasStopLossBounceHope(
+        MarketStructureSnapshot? structure,
+        TechnicalMarketSnapshot? technical,
+        out string detail)
+    {
+        var structureHope = false;
+        var structureBits = new List<string>();
+        if (structure is { HasData: true })
+        {
+            var nearSupport = structure.DistanceToSupportPercent is >= 0m and <= StopLossDeferNearSupportPercent;
+            var bullishOk = structure.HasBullishFlag && structure.ContextScore > -0.5m;
+            var nearRangeLow = structure.PricePercentile90d <= 25m;
+            var hopeless = structure.ContextScore <= -0.75m && !structure.HasBullishFlag && structure.PricePercentile90d > 50m;
+
+            if (hopeless)
+            {
+                detail = $"contexto 30-90d desfavorable ({structure.Summary})";
+                return false;
+            }
+
+            structureHope = nearSupport || bullishOk || nearRangeLow;
+            if (nearSupport) structureBits.Add($"cerca soporte 90d ({structure.DistanceToSupportPercent:0.#}%)");
+            if (bullishOk) structureBits.Add("bandera alcista");
+            if (nearRangeLow) structureBits.Add($"pct90d={structure.PricePercentile90d:0.#}");
+        }
+
+        var technicalHope = false;
+        var techBits = new List<string>();
+        if (technical is not null)
+        {
+            var rsiOversold = technical.Rsi14 <= 35m;
+            var macdTurningUp = technical.MacdHistogram > technical.PreviousMacdHistogram;
+            var rsiRecovering = technical.Rsi14 <= 42m && macdTurningUp;
+            var macdRisingFromNeg = technical.MacdHistogram < 0m && macdTurningUp;
+            technicalHope = rsiOversold || rsiRecovering || macdRisingFromNeg;
+            if (rsiOversold) techBits.Add($"RSI {technical.Rsi14:0.#}");
+            if (rsiRecovering || macdRisingFromNeg) techBits.Add("MACD histograma mejorando");
+        }
+
+        // Requiere estructura + tecnicos cuando hay datos de estructura; si no hay estructura, solo tecnicos fuertes.
+        var ok = structure is { HasData: true }
+            ? structureHope && technicalHope
+            : technicalHope && technical is not null && technical.Rsi14 <= 30m &&
+              technical.MacdHistogram > technical.PreviousMacdHistogram;
+
+        if (!ok)
+        {
+            detail = structure is { HasData: true }
+                ? $"estructura={structureHope}; tecnicos={technicalHope}"
+                : "sin estructura 30-90d y tecnicos insuficientes";
+            return false;
+        }
+
+        var parts = structureBits.Concat(techBits).ToList();
+        detail = parts.Count > 0 ? string.Join(", ", parts) : "rebote plausible";
+        return true;
+    }
+
+    private static string BuildStopLossGraceKey(TradingBot bot)
+    {
+        var opened = bot.PositionOpenedAtUtc?.ToString("O") ?? "none";
+        return $"{bot.Id:N}|{opened}";
+    }
+
+    private static void ClearStopLossGrace(TradingBot bot)
+    {
+        StopLossGraceUntilUtc.TryRemove(BuildStopLossGraceKey(bot), out _);
     }
 
     private static string ResolveQuoteAsset(string symbol)
