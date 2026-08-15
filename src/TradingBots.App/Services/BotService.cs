@@ -151,6 +151,13 @@ public sealed class BotService(
         if (state == BotState.Running)
         {
             bot.LastRunningStartedAtUtc = DateTime.UtcNow;
+            var sym = bot.Symbols.FirstOrDefault() ?? string.Empty;
+            if (EntryFilters.IsPreferredRecoverySymbol(sym))
+            {
+                // Reinicia presupuesto de pérdida de sesión para flota recovery.
+                bot.AutoScaleReferencePnlUsdt = bot.RealizedPnlUsdt;
+                bot.LastExecutionError = string.Empty;
+            }
         }
 
         await dbContext.SaveChangesAsync();
@@ -285,7 +292,7 @@ public sealed class BotService(
             bot.LastExecutionError = "Bot pausado por racha de perdidas consecutivas (AutoPilot).";
         }
 
-        if (bot.RealizedPnlUsdt <= -Math.Abs(bot.MaxDailyLossUsdt))
+        if (EntryFilters.GetSessionRealizedPnl(bot) <= -Math.Abs(bot.MaxDailyLossUsdt))
         {
             bot.State = BotState.Stopped;
             bot.LastExecutionError = "Bot pausado por perdida diaria maxima (AutoPilot).";
@@ -788,7 +795,7 @@ public sealed class BotService(
                 bot.LastAutoScaleUtc = DateTime.UtcNow;
             }
 
-            if (bot.RealizedPnlUsdt <= -Math.Abs(bot.MaxDailyLossUsdt))
+            if (EntryFilters.GetSessionRealizedPnl(bot) <= -Math.Abs(bot.MaxDailyLossUsdt))
             {
                 bot.State = BotState.Stopped;
                 bot.LastExecutionError = "Bot pausado por perdida acumulada maxima (AutoPilot).";

@@ -33,13 +33,6 @@ public sealed class AutoTraderService(
     private const decimal QuarantineAvgLossToWinRatio = 1.2m;
     private const int MaxAutoBotsHardCap = 15;
     private const decimal MinNetProfitFloor = 0.35m;
-    /// <summary>SOL: anomalias y PF reciente malo — bloqueo duro temporal.</summary>
-    private static readonly HashSet<string> HardBlockedBases = new(StringComparer.OrdinalIgnoreCase)
-    {
-        "SOL"
-    };
-    private static readonly DateTime SolHardBlockUntilUtc = new(2026, 8, 19, 0, 0, 0, DateTimeKind.Utc);
-
     public async Task<int> CreateBotsFromSuggestionsAsync()
     {
         var now = DateTime.UtcNow;
@@ -68,17 +61,17 @@ public sealed class AutoTraderService(
                      x.PositionQuantity <= 0m))
         {
             var sym = bot.Symbols.FirstOrDefault() ?? string.Empty;
-            if (IsHardBlockedSymbol(sym, now))
+            if (EntryFilters.IsHardBlockedSymbol(sym, now))
             {
                 bot.State = BotState.Stopped;
                 bot.LastExecutionError =
-                    $"AutoTrader: bloqueo duro {sym} hasta {SolHardBlockUntilUtc:yyyy-MM-dd} UTC (anomalia/PF reciente).";
+                    $"AutoTrader: bloqueo duro {sym} hasta {EntryFilters.SolHardBlockUntilUtc:yyyy-MM-dd} UTC (anomalia/PF reciente).";
                 bot.UpdatedAtUtc = now;
                 bot.OutOfTopCycles = 0;
                 continue;
             }
 
-            if (quarantine.Contains(sym) && !IsPreferredRecoverySymbol(sym))
+            if (quarantine.Contains(sym) && !EntryFilters.IsPreferredRecoverySymbol(sym))
             {
                 bot.State = BotState.Stopped;
                 bot.LastExecutionError =
@@ -125,8 +118,8 @@ public sealed class AutoTraderService(
             .Select(g => g.OrderByDescending(x => x.CreatedAtUtc).First())
             .Where(x => x.Signal == "BUY" &&
                         PassesQualityGate(x, symbolBias) &&
-                        !IsHardBlockedSymbol(x.Symbol, now) &&
-                        (!quarantine.Contains(x.Symbol) || IsPreferredRecoverySymbol(x.Symbol)) &&
+                        !EntryFilters.IsHardBlockedSymbol(x.Symbol, now) &&
+                        (!quarantine.Contains(x.Symbol) || EntryFilters.IsPreferredRecoverySymbol(x.Symbol)) &&
                         !AutopilotSymbolBlocklist.Contains(x.Symbol) &&
                         TradingSymbolFilters.IsTradableVolatilePair(x.Symbol) &&
                         EntryFilters.IsAutopilotAllowedSymbol(x.Symbol))
@@ -154,7 +147,10 @@ public sealed class AutoTraderService(
         {
             var sym = idle.Symbols.FirstOrDefault() ?? string.Empty;
             var trades = tradeCountByBot.GetValueOrDefault(idle.Id);
-            if (trades > 0 || string.IsNullOrWhiteSpace(sym) || targetSymbols.Contains(sym))
+            if (trades > 0 ||
+                string.IsNullOrWhiteSpace(sym) ||
+                targetSymbols.Contains(sym) ||
+                EntryFilters.IsPreferredRecoverySymbol(sym))
             {
                 continue;
             }
@@ -180,6 +176,7 @@ public sealed class AutoTraderService(
             var runningSymbol = running.Symbols.FirstOrDefault() ?? string.Empty;
             var activeAge = now - (running.LastRunningStartedAtUtc ?? running.CreatedAtUtc);
             if (!string.IsNullOrWhiteSpace(runningSymbol) &&
+                !EntryFilters.IsPreferredRecoverySymbol(runningSymbol) &&
                 !targetSymbols.Contains(runningSymbol) &&
                 activeAge >= minActiveBeforePause)
             {
@@ -204,7 +201,8 @@ public sealed class AutoTraderService(
         var createdCount = 0;
         foreach (var candidate in target)
         {
-            if (quarantine.Contains(candidate.Symbol))
+            if (quarantine.Contains(candidate.Symbol) &&
+                !EntryFilters.IsPreferredRecoverySymbol(candidate.Symbol))
             {
                 continue;
             }
@@ -268,7 +266,10 @@ public sealed class AutoTraderService(
                 recyclable.Symbols = [candidate.Symbol];
                 recyclable.State = BotState.Running;
                 recyclable.IsAutoManaged = true;
-                recyclable.AutoScaleReferencePnlUsdt = 0m;
+                // Sesión de pérdida: en recovery BTC/ETH partir desde PnL actual.
+                recyclable.AutoScaleReferencePnlUsdt = EntryFilters.IsPreferredRecoverySymbol(candidate.Symbol)
+                    ? recyclable.RealizedPnlUsdt
+                    : 0m;
                 recyclable.StrategyType = strategy;
                 recyclable.LastExecutionError = string.Empty;
                 recyclable.ConsecutiveLossTrades = 0;
@@ -378,7 +379,7 @@ public sealed class AutoTraderService(
         var set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         // Bloqueo duro SOL hasta fecha fija (anomalia -4.9% y peor bot de ventana).
-        if (nowUtc < SolHardBlockUntilUtc)
+        if (nowUtc < EntryFilters.SolHardBlockUntilUtc)
         {
             set.Add("SOLUSDT");
             set.Add("SOLUSDC");
@@ -445,22 +446,6 @@ public sealed class AutoTraderService(
         return set;
     }
 
-    private static bool IsPreferredRecoverySymbol(string symbol) =>
-        symbol.Equals("BTCUSDT", StringComparison.OrdinalIgnoreCase) ||
-        symbol.Equals("BTCUSDC", StringComparison.OrdinalIgnoreCase) ||
-        symbol.Equals("ETHUSDT", StringComparison.OrdinalIgnoreCase) ||
-        symbol.Equals("ETHUSDC", StringComparison.OrdinalIgnoreCase);
-
-    private static bool IsHardBlockedSymbol(string symbol, DateTime nowUtc)
-    {
-        if (nowUtc >= SolHardBlockUntilUtc)
-        {
-            return false;
-        }
-
-        return EntryFilters.TryGetBaseAsset(symbol, out var baseAsset) && HardBlockedBases.Contains(baseAsset);
-    }
-
     private static TimeSpan ResolveRecycleCooldown(TradingBot stoppedBot, TimeSpan configuredReactivate, int minMinutesAfterRiskStop)
     {
         if (IsOperationalRecycleStop(stoppedBot.LastExecutionError))
@@ -499,7 +484,8 @@ public sealed class AutoTraderService(
             return true;
         }
 
-        if (bot.MaxDailyLossUsdt > 0m && bot.RealizedPnlUsdt <= -Math.Abs(bot.MaxDailyLossUsdt))
+        if (bot.MaxDailyLossUsdt > 0m &&
+            EntryFilters.GetSessionRealizedPnl(bot) <= -Math.Abs(bot.MaxDailyLossUsdt))
         {
             return true;
         }

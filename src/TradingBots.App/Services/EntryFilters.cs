@@ -47,6 +47,37 @@ public static class EntryFilters
 
     public static bool IsAutopilotAllowedSymbol(string symbol) => IsMajorSymbol(symbol);
 
+    /// <summary>Flota mínima de recuperación: no cortar por supervisor/cuarentena blanda.</summary>
+    private static readonly HashSet<string> PreferredRecoverySymbols = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "BTCUSDT", "BTCUSDC", "ETHUSDT", "ETHUSDC"
+    };
+
+    private static readonly HashSet<string> HardBlockedBases = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "SOL"
+    };
+
+    /// <summary>Bloqueo duro SOL hasta esta fecha UTC.</summary>
+    public static readonly DateTime SolHardBlockUntilUtc = new(2026, 8, 19, 0, 0, 0, DateTimeKind.Utc);
+
+    public static bool IsPreferredRecoverySymbol(string symbol) =>
+        !string.IsNullOrWhiteSpace(symbol) && PreferredRecoverySymbols.Contains(symbol.Trim());
+
+    public static bool IsHardBlockedSymbol(string symbol, DateTime nowUtc)
+    {
+        if (nowUtc >= SolHardBlockUntilUtc || string.IsNullOrWhiteSpace(symbol))
+        {
+            return false;
+        }
+
+        return TryGetBaseAsset(symbol, out var baseAsset) && HardBlockedBases.Contains(baseAsset);
+    }
+
+    /// <summary>PnL de sesión vs referencia (reinicio en start de flota recovery).</summary>
+    public static decimal GetSessionRealizedPnl(TradingBot bot) =>
+        bot.RealizedPnlUsdt - bot.AutoScaleReferencePnlUsdt;
+
     public static decimal GetMinQuoteVolume24h(string symbol) =>
         IsMajorSymbol(symbol) ? CoreMinQuoteVolume24h : AltMinQuoteVolume24h;
 

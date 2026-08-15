@@ -54,6 +54,12 @@ public sealed class BotSupervisorService(
 
             var sym = bot.Symbols.FirstOrDefault() ?? string.Empty;
 
+            // Flota recovery BTC/ETH: no cortar por inactividad histórica al reactivar.
+            if (EntryFilters.IsPreferredRecoverySymbol(sym))
+            {
+                continue;
+            }
+
             if (!lastTradeByBot.ContainsKey(bot.Id))
             {
                 var started = bot.LastRunningStartedAtUtc ?? bot.CreatedAtUtc;
