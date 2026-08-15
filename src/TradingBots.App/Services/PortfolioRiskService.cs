@@ -46,6 +46,7 @@ public sealed class PortfolioRiskService(
         var globalMaxLoss = settings.GlobalMaxDailyLossUsdt <= 0m ? 15m : settings.GlobalMaxDailyLossUsdt;
         var btcGate = settings.BtcCrashGatePercent <= 0m ? 3m : settings.BtcCrashGatePercent;
         var maxAlts = settings.MaxConcurrentAltPositions <= 0 ? 4 : settings.MaxConcurrentAltPositions;
+        const int maxOpenPositionsFleet = 2;
 
         var dailyPnl = await GetTodayRealizedPnlAsync(ct);
         if (dailyPnl <= -Math.Abs(globalMaxLoss))
@@ -67,12 +68,23 @@ public sealed class PortfolioRiskService(
             };
         }
 
+        var openBots = await dbContext.Bots
+            .AsNoTracking()
+            .Where(x => x.State == BotState.Running && x.PositionQuantity > 0m)
+            .ToListAsync(ct);
+
+        // Quality-over-quantity: max 2 posiciones abiertas en toda la flota (mismo beta crypto).
+        if (openBots.Count >= maxOpenPositionsFleet)
+        {
+            return new PortfolioRiskVerdict
+            {
+                Allowed = false,
+                Reason = $"Limite de concurrencia flota: {openBots.Count}/{maxOpenPositionsFleet} posiciones abiertas."
+            };
+        }
+
         if (!IsBtcSymbol(symbol) && !EntryFilters.IsMajorSymbol(symbol))
         {
-            var openBots = await dbContext.Bots
-                .AsNoTracking()
-                .Where(x => x.State == BotState.Running && x.PositionQuantity > 0m)
-                .ToListAsync(ct);
             var openAlts = openBots.Count(b =>
                 b.Symbols.Count > 0 &&
                 b.Symbols.All(s => !EntryFilters.IsMajorSymbol(s) && !IsBtcSymbol(s)));

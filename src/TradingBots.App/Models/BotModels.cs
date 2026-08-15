@@ -245,7 +245,7 @@ public sealed class BinanceConnectionSettings
     public bool LiveSafetyConfirmed { get; set; }
     public bool LiveEnabledByChecklist { get; set; }
     public bool GlobalKillSwitch { get; set; } = true;
-    public int MaxAutoBots { get; set; } = 12;
+    public int MaxAutoBots { get; set; } = 6;
     public bool AutoControlTuningEnabled { get; set; } = true;
     public int SupervisorInactiveMinutes { get; set; } = 180;
     public int RebalanceOutOfTopCycles { get; set; } = 3;
@@ -281,7 +281,7 @@ public sealed class UpdateBinanceSettingsRequest
     public bool LiveSafetyConfirmed { get; set; }
     public bool LiveEnabledByChecklist { get; set; }
     public bool GlobalKillSwitch { get; set; } = true;
-    public int MaxAutoBots { get; set; } = 12;
+    public int MaxAutoBots { get; set; } = 6;
     public bool AutoControlTuningEnabled { get; set; } = true;
     public int SupervisorInactiveMinutes { get; set; } = 180;
     public int RebalanceOutOfTopCycles { get; set; } = 3;

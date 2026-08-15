@@ -590,17 +590,17 @@ using (var scope = app.Services.CreateScope())
         {
             IsEnabled = false,
             Environment = BinanceEnvironment.Sandbox,
-            MaxAutoBots = 12
+            MaxAutoBots = 6
         });
         await db.SaveChangesAsync();
     }
     else
     {
-        // Quality-over-quantity: alinear flota a MaxAutoBots=12 (cap duro 15 en codigo).
+        // Quality-over-quantity: flota reducida MaxAutoBots=6 (cap duro 15 en codigo).
         await db.BinanceSettings
-            .Where(x => x.MaxAutoBots <= 0 || x.MaxAutoBots > 12)
+            .Where(x => x.MaxAutoBots <= 0 || x.MaxAutoBots > 6)
             .ExecuteUpdateAsync(s => s
-                .SetProperty(x => x.MaxAutoBots, 12)
+                .SetProperty(x => x.MaxAutoBots, 6)
                 .SetProperty(x => x.UpdatedAtUtc, DateTime.UtcNow));
     }
 }

@@ -33,6 +33,12 @@ public sealed class AutoTraderService(
     private const decimal QuarantineAvgLossToWinRatio = 1.2m;
     private const int MaxAutoBotsHardCap = 15;
     private const decimal MinNetProfitFloor = 0.35m;
+    /// <summary>SOL: anomalias y PF reciente malo — bloqueo duro temporal.</summary>
+    private static readonly HashSet<string> HardBlockedBases = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "SOL"
+    };
+    private static readonly DateTime SolHardBlockUntilUtc = new(2026, 8, 19, 0, 0, 0, DateTimeKind.Utc);
 
     public async Task<int> CreateBotsFromSuggestionsAsync()
     {
@@ -62,7 +68,17 @@ public sealed class AutoTraderService(
                      x.PositionQuantity <= 0m))
         {
             var sym = bot.Symbols.FirstOrDefault() ?? string.Empty;
-            if (quarantine.Contains(sym))
+            if (IsHardBlockedSymbol(sym, now))
+            {
+                bot.State = BotState.Stopped;
+                bot.LastExecutionError =
+                    $"AutoTrader: bloqueo duro {sym} hasta {SolHardBlockUntilUtc:yyyy-MM-dd} UTC (anomalia/PF reciente).";
+                bot.UpdatedAtUtc = now;
+                bot.OutOfTopCycles = 0;
+                continue;
+            }
+
+            if (quarantine.Contains(sym) && !IsPreferredRecoverySymbol(sym))
             {
                 bot.State = BotState.Stopped;
                 bot.LastExecutionError =
@@ -109,7 +125,8 @@ public sealed class AutoTraderService(
             .Select(g => g.OrderByDescending(x => x.CreatedAtUtc).First())
             .Where(x => x.Signal == "BUY" &&
                         PassesQualityGate(x, symbolBias) &&
-                        !quarantine.Contains(x.Symbol) &&
+                        !IsHardBlockedSymbol(x.Symbol, now) &&
+                        (!quarantine.Contains(x.Symbol) || IsPreferredRecoverySymbol(x.Symbol)) &&
                         !AutopilotSymbolBlocklist.Contains(x.Symbol) &&
                         TradingSymbolFilters.IsTradableVolatilePair(x.Symbol) &&
                         EntryFilters.IsAutopilotAllowedSymbol(x.Symbol))
@@ -360,6 +377,13 @@ public sealed class AutoTraderService(
     {
         var set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
+        // Bloqueo duro SOL hasta fecha fija (anomalia -4.9% y peor bot de ventana).
+        if (nowUtc < SolHardBlockUntilUtc)
+        {
+            set.Add("SOLUSDT");
+            set.Add("SOLUSDC");
+        }
+
         var fastFrom = nowUtc.AddHours(-FastQuarantineLookbackHours);
         var fastRows = await dbContext.Trades
             .AsNoTracking()
@@ -368,7 +392,8 @@ public sealed class AutoTraderService(
             .ToListAsync();
         foreach (var g in fastRows.GroupBy(x => x.Symbol, StringComparer.OrdinalIgnoreCase))
         {
-            if (g.Count() >= MinSellsForFastQuarantine && g.Sum(x => x.RealizedPnlUsdt) < 0m)
+            // Exigir sangrado real (>=0.50 USDT), no micro-rojo que apaga toda la flota.
+            if (g.Count() >= MinSellsForFastQuarantine && g.Sum(x => x.RealizedPnlUsdt) <= -0.50m)
             {
                 set.Add(g.Key);
             }
@@ -418,6 +443,22 @@ public sealed class AutoTraderService(
         }
 
         return set;
+    }
+
+    private static bool IsPreferredRecoverySymbol(string symbol) =>
+        symbol.Equals("BTCUSDT", StringComparison.OrdinalIgnoreCase) ||
+        symbol.Equals("BTCUSDC", StringComparison.OrdinalIgnoreCase) ||
+        symbol.Equals("ETHUSDT", StringComparison.OrdinalIgnoreCase) ||
+        symbol.Equals("ETHUSDC", StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsHardBlockedSymbol(string symbol, DateTime nowUtc)
+    {
+        if (nowUtc >= SolHardBlockUntilUtc)
+        {
+            return false;
+        }
+
+        return EntryFilters.TryGetBaseAsset(symbol, out var baseAsset) && HardBlockedBases.Contains(baseAsset);
     }
 
     private static TimeSpan ResolveRecycleCooldown(TradingBot stoppedBot, TimeSpan configuredReactivate, int minMinutesAfterRiskStop)

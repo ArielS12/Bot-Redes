@@ -41,8 +41,10 @@ public sealed class BotService(
     private const decimal MinNetProfitToExitPercent = 0.50m;
     /// <summary>Tras MFE >= MinNetProfit, salir si el PnL cae a este umbral o menos (soft BE fee-aware).</summary>
     private const decimal SoftBreakevenExitPercent = 0.05m;
-    /// <summary>Minutos sin MFE suficiente y en rojo/flat → invalidacion temprana.</summary>
-    private const int EarlyInvalidationMinutes = 120;
+    /// <summary>Minutos sin MFE suficiente y en rojo claro → invalidacion temprana.</summary>
+    private const int EarlyInvalidationMinutes = 180;
+    /// <summary>Solo invalidar si el PnL ya esta claramente en rojo (evita micro-cortes -0.05%).</summary>
+    private const decimal EarlyInvalidationMinLossPercent = -0.25m;
     /// <summary>Profit minimo (%) para time-stop al MaxHolding (cubre fees mejor que -0.20%).</summary>
     private const decimal TimeStopFeeAwareMinProfitPercent = 0.35m;
     /// <summary>Techo absoluto de hold (zombie): forzar cierre siempre.</summary>
@@ -436,7 +438,7 @@ public sealed class BotService(
                                (contextDefensiveExitHit || pnlPct >= TimeStopFeeAwareMinProfitPercent));
             var earlyInvalidationHit = holdingMinutes >= EarlyInvalidationMinutes &&
                                        mfePct < MinNetProfitToExitPercent &&
-                                       pnlPct <= 0m;
+                                       pnlPct <= EarlyInvalidationMinLossPercent;
             var anomalyLossHit = bot.PositionQuantity > 0m && pnlPct <= AnomalyLossPercent;
             var netProfitableEnough = pnlPct >= MinNetProfitToExitPercent;
             var investedCapital = bot.PositionQuantity > 0m && bot.AverageEntryPrice > 0m
@@ -954,7 +956,7 @@ public sealed class BotService(
                                    !timeExpiredZombie;
             var earlyInvalidationHit = holdingMinutes >= EarlyInvalidationMinutes &&
                                        mfePct < MinNetProfitToExitPercent &&
-                                       pnlPct <= 0m;
+                                       pnlPct <= EarlyInvalidationMinLossPercent;
             var anomalyLossHit = bot.PositionQuantity > 0m && pnlPct <= AnomalyLossPercent;
             var stopLossDeferReason = string.Empty;
             var stopLossDeferred = stopLossHit &&
@@ -1079,9 +1081,9 @@ public sealed class BotService(
             }
             else if (earlyInvalidationHit)
             {
-                label = "INVALIDACION_120";
+                label = "INVALIDACION_180";
                 reason =
-                    $"Invalidacion temprana: {holdingMinutes} min sin MFE >= {MinNetProfitToExitPercent:0.##}% y PnL {pnlPct:0.##}% <= 0.";
+                    $"Invalidacion temprana: {holdingMinutes} min sin MFE >= {MinNetProfitToExitPercent:0.##}% y PnL {pnlPct:0.##}% <= {EarlyInvalidationMinLossPercent:0.##}%.";
             }
             else if (stopLossDeferred)
             {
@@ -1270,7 +1272,7 @@ public sealed class BotService(
         if (tp2Ready) states.Add("TP2_LISTO");
         if (trailingArmed) states.Add("TRAILING_ARMADO");
         if (softBreakevenHit) states.Add("SOFT_BE_LISTO");
-        if (earlyInvalidationHit) states.Add("INVALIDACION_120");
+        if (earlyInvalidationHit) states.Add("INVALIDACION_180");
         if (timeStopFeeGated) states.Add("TIME_STOP_FEE_GATE");
         if (timeStopHit) states.Add("TIME_STOP_LISTO");
         if (stopLossDeferred) states.Add("SL_DIFERIDO");

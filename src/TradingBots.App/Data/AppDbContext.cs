@@ -77,7 +77,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
         {
             entity.HasKey(x => x.Id);
             entity.Property(x => x.ExecutionMode).HasConversion<int>();
-            entity.Property(x => x.MaxAutoBots).HasDefaultValue(12);
+            entity.Property(x => x.MaxAutoBots).HasDefaultValue(6);
             entity.Property(x => x.AutoControlTuningEnabled).HasDefaultValue(true);
             entity.Property(x => x.SupervisorInactiveMinutes).HasDefaultValue(180);
             entity.Property(x => x.RebalanceOutOfTopCycles).HasDefaultValue(3);

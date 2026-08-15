@@ -16,7 +16,7 @@ public sealed class BotMaintenanceService(
     IBinanceSettingsService settingsService) : IBotMaintenanceService
 {
     private const int MaxAutoBotsHardCap = 15;
-    private const int DefaultMaxRunning = 12;
+    private const int DefaultMaxRunning = 6;
     private const int TargetMaxTotalBots = 30;
 
     public async Task<BotMaintenanceResult> ConsolidateFleetAsync(CancellationToken ct = default)
