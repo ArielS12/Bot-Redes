@@ -3,15 +3,15 @@ namespace TradingBots.App.Models;
 public sealed class BacktestRequest
 {
     public string Symbol { get; set; } = "BTCUSDT";
-    public StrategyType Strategy { get; set; } = StrategyType.Momentum;
+    public StrategyType Strategy { get; set; } = StrategyType.Pullback;
     public DateTime FromUtc { get; set; }
     public DateTime ToUtc { get; set; }
-    public decimal StopLossPercent { get; set; } = 1.8m;
-    public decimal TakeProfitPercent { get; set; } = 3.2m;
-    public int MaxHoldingMinutes { get; set; } = 180;
+    public decimal StopLossPercent { get; set; } = 1.2m;
+    public decimal TakeProfitPercent { get; set; } = 4.2m;
+    public int MaxHoldingMinutes { get; set; } = 360;
     public decimal QuotePerTradeUsdt { get; set; } = 20m;
-    public decimal TrailingActivationPercent { get; set; } = 1.2m;
-    public decimal TrailingStopPercent { get; set; } = 0.8m;
+    public decimal TrailingActivationPercent { get; set; } = 1.5m;
+    public decimal TrailingStopPercent { get; set; } = 0.9m;
 }
 
 public sealed class BacktestTradeRecord

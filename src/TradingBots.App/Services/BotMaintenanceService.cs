@@ -22,7 +22,8 @@ public sealed class BotMaintenanceService(
     public async Task<BotMaintenanceResult> ConsolidateFleetAsync(CancellationToken ct = default)
     {
         var settings = await settingsService.GetActiveSettingsAsync();
-        var maxRunning = Math.Clamp(settings.MaxAutoBots <= 0 ? DefaultMaxRunning : settings.MaxAutoBots, 1, MaxAutoBotsHardCap);
+        var haltFleet = settings.MaxAutoBots <= 0;
+        var maxRunning = haltFleet ? 0 : Math.Clamp(settings.MaxAutoBots, 1, MaxAutoBotsHardCap);
         var bots = await db.Bots.OrderByDescending(x => x.State).ThenBy(x => x.Name).ToListAsync(ct);
         var botIds = bots.Select(x => x.Id).ToList();
         var tradeCounts = await db.Trades
@@ -110,7 +111,7 @@ public sealed class BotMaintenanceService(
             stopped++;
         }
 
-        if (settings.MaxAutoBots > MaxAutoBotsHardCap || settings.MaxAutoBots <= 0 || settings.MaxAutoBots > DefaultMaxRunning)
+        if (settings.MaxAutoBots > MaxAutoBotsHardCap || settings.MaxAutoBots > DefaultMaxRunning)
         {
             var row = await db.BinanceSettings.FirstOrDefaultAsync(x => x.Id == 1, ct);
             if (row is not null && row.MaxAutoBots != DefaultMaxRunning)

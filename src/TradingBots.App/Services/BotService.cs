@@ -37,17 +37,17 @@ public sealed class BotService(
     private const decimal BaseRiskPercentPerTrade = 0.50m;
     /// <summary>Coste estimado round-trip (fees+slippage) en basis points.</summary>
     private const decimal RoundTripCostBps = 20m;
-    /// <summary>Beneficio minimo neto (%) para salidas tacticas / TP parcial.</summary>
-    private const decimal MinNetProfitToExitPercent = 0.50m;
-    /// <summary>Tras MFE >= MinNetProfit, salir si el PnL cae a este umbral o menos (soft BE fee-aware).</summary>
-    private const decimal SoftBreakevenExitPercent = 0.05m;
+    /// <summary>Floor tactico: no recortar winners por debajo de ~mitad del TP 4.2%.</summary>
+    private const decimal MinNetProfitToExitPercent = 2.0m;
+    /// <summary>Soft BE: salir cubriendo ~20 bps de fees, no a +0.05% (neto negativo).</summary>
+    private const decimal SoftBreakevenExitPercent = 0.25m;
+    /// <summary>Armar soft BE en el mismo umbral que trailing si el bot no trae activation.</summary>
+    private const decimal SoftBreakevenArmPercentFallback = 1.5m;
     /// <summary>Minutos sin MFE suficiente y en rojo claro → invalidacion temprana.</summary>
     private const int EarlyInvalidationMinutes = 180;
     /// <summary>Solo invalidar si el PnL ya esta claramente en rojo (evita micro-cortes -0.05%).</summary>
     private const decimal EarlyInvalidationMinLossPercent = -0.25m;
-    /// <summary>Profit minimo (%) para time-stop al MaxHolding (cubre fees mejor que -0.20%).</summary>
-    private const decimal TimeStopFeeAwareMinProfitPercent = 0.35m;
-    /// <summary>Techo absoluto de hold (zombie): forzar cierre siempre.</summary>
+    /// <summary>Techo absoluto de hold (zombie): forzar cierre solo si sigue en rojo o plano.</summary>
     private const int MaxZombieHoldingMinutes = 480;
     /// <summary>PnL % anomalo: forzar venta y circuit del simbolo.</summary>
     private const decimal AnomalyLossPercent = -3.0m;
@@ -407,7 +407,8 @@ public sealed class BotService(
                 .FirstOrDefault();
             var buySignal = buyCandidate is not null;
             var activeTechnical = technicalBySymbol.TryGetValue(activeSymbol, out var t) ? t : null;
-            var sellSignal = activeTechnical is not null && signals.ShouldSell(activeTechnical);
+            technical5mBySymbol.TryGetValue(activeSymbol, out var activeTf5);
+            var sellSignal = activeTechnical is not null && signals.ShouldSell(activeTechnical, activeTf5);
             var effectiveStopPct = activeTechnical is not null
                 ? ComputeEffectiveStopLossPercent(bot, activeTechnical)
                 : bot.StopLossPercent;
@@ -422,8 +423,11 @@ public sealed class BotService(
             var mfePct = ComputeMaxFavorableExcursionPercent(bot);
             var holdingMinutes = GetHoldingMinutes(bot);
             var progressToTp = bot.TakeProfitPercent > 0m ? pnlPct / bot.TakeProfitPercent : 0m;
-            // Soft BE: si el trade llego a +0.50% MFE, proteger giveback (no esperar SL).
-            var softBreakevenArmed = bot.PositionQuantity > 0m && mfePct >= MinNetProfitToExitPercent;
+            // Soft BE: armar en trailing activation (~1.5%), salir cubriendo fees (~+0.25%).
+            var softBeArmPct = bot.TrailingActivationPercent > 0m
+                ? bot.TrailingActivationPercent
+                : SoftBreakevenArmPercentFallback;
+            var softBreakevenArmed = bot.PositionQuantity > 0m && mfePct >= softBeArmPct;
             var softBreakevenHit = softBreakevenArmed && pnlPct <= SoftBreakevenExitPercent;
             // BE profundo legacy: 70% del camino al TP.
             var breakevenArmed = progressToTp >= 0.70m &&
@@ -439,10 +443,9 @@ public sealed class BotService(
             var timeExpiredZombie = holdingMinutes >= MaxZombieHoldingMinutes;
             var activeStructure = structureBySymbol.GetValueOrDefault(activeSymbol);
             var contextDefensiveExitHit = ShouldMarketStructureDefensiveExit(activeStructure, pnlPct);
-            // Time-stop fee-aware: a MaxHolding solo con profit suficiente o defensiva; a 480m forzar.
-            var timeStopHit = timeExpiredZombie ||
-                              (timeExpiredConfigured &&
-                               (contextDefensiveExitHit || pnlPct >= TimeStopFeeAwareMinProfitPercent));
+            // Time-stop: a MaxHolding solo defensiva de estructura; a 480m forzar solo si PnL <= 0.
+            var timeStopHit = (timeExpiredZombie && pnlPct <= 0m) ||
+                              (timeExpiredConfigured && contextDefensiveExitHit);
             var earlyInvalidationHit = holdingMinutes >= EarlyInvalidationMinutes &&
                                        mfePct < MinNetProfitToExitPercent &&
                                        pnlPct <= EarlyInvalidationMinLossPercent;
@@ -649,12 +652,15 @@ public sealed class BotService(
                         $"Salida forzada por perdida anomala ({pnlPct:0.##}% <= {AnomalyLossPercent:0.##}%).";
                 }
 
+                // Bounce fallido: ShouldSell solo cierra si nunca fue un winner real o esta bajo entrada.
+                var bounceInvalidationHit = sellSignal &&
+                                            (mfePct < MinNetProfitToExitPercent || pnlPct < 0m);
                 // Salidas de riesgo (SL/time-stop/contexto/BE/invalidacion/anomalia) sin exigir profit tactico.
                 var riskExit = stopLossExit || breakevenStopHit || softBreakevenHit || timeStopHit ||
-                               contextDefensiveExitHit || earlyInvalidationHit || anomalyLossHit;
-                // Salidas tacticas: exigen beneficio neto sobre coste round-trip estimado.
-                var tacticalExit = netProfitableEnough &&
-                                   (sellSignal || takeProfitHit || trailingStopHit || pnlPct >= bot.TakeProfit2Percent);
+                               contextDefensiveExitHit || earlyInvalidationHit || anomalyLossHit ||
+                               bounceInvalidationHit;
+                // Winners: solo TP o trailing. sellSignal ya no recorta a +0.50%.
+                var tacticalExit = takeProfitHit || trailingStopHit || pnlPct >= bot.TakeProfit2Percent;
                 var requestFullExit = riskExit || tacticalExit;
                 var requestPartialTp = !bot.TakeProfit1Taken &&
                                        netProfitableEnough &&
@@ -936,7 +942,8 @@ public sealed class BotService(
             var exposureLimit = bot.BudgetUsdt * (Math.Clamp(bot.MaxExposurePercent, 1m, 100m) / 100m);
             var remainingBudget = Math.Max(0m, exposureLimit - investedCapital);
             var profitableNow = bot.PositionQuantity > 0m && bot.AverageEntryPrice > 0m && activePrice > bot.AverageEntryPrice;
-            var sellSignal = signals.ShouldSell(activeTechnical);
+            technical5mBySymbol.TryGetValue(activeSymbol, out var activeTf5);
+            var sellSignal = signals.ShouldSell(activeTechnical, activeTf5);
             var takeProfitHit = bot.PositionQuantity > 0m && bot.AverageEntryPrice > 0m &&
                                 ((activePrice - bot.AverageEntryPrice) / bot.AverageEntryPrice) * 100m >= bot.TakeProfitPercent;
             var pnlPct = bot.PositionQuantity > 0m && bot.AverageEntryPrice > 0m
@@ -947,7 +954,10 @@ public sealed class BotService(
             var effectiveStopPctDiag = ComputeEffectiveStopLossPercent(bot, activeTechnical);
             var stopLossHit = bot.PositionQuantity > 0m && bot.AverageEntryPrice > 0m &&
                               pnlPct <= -effectiveStopPctDiag;
-            var softBreakevenArmed = bot.PositionQuantity > 0m && mfePct >= MinNetProfitToExitPercent;
+            var softBeArmPct = bot.TrailingActivationPercent > 0m
+                ? bot.TrailingActivationPercent
+                : SoftBreakevenArmPercentFallback;
+            var softBreakevenArmed = bot.PositionQuantity > 0m && mfePct >= softBeArmPct;
             var softBreakevenHit = softBreakevenArmed && pnlPct <= SoftBreakevenExitPercent;
             var trailingArmed = pnlPct >= bot.TrailingActivationPercent && bot.PeakPriceSinceEntry > 0m;
             var configuredHoldMinutes = bot.MaxHoldingMinutes > 0 ? bot.MaxHoldingMinutes : 360;
@@ -955,12 +965,9 @@ public sealed class BotService(
             var timeExpiredZombie = holdingMinutes >= MaxZombieHoldingMinutes;
             var activeStructure = structureBySymbol.GetValueOrDefault(activeSymbol);
             var contextDefensiveExitHit = ShouldMarketStructureDefensiveExit(activeStructure, pnlPct);
-            var timeStopHit = timeExpiredZombie ||
-                              (timeExpiredConfigured &&
-                               (contextDefensiveExitHit || pnlPct >= TimeStopFeeAwareMinProfitPercent));
-            var timeStopFeeGated = timeExpiredConfigured &&
-                                   !timeStopHit &&
-                                   !timeExpiredZombie;
+            var timeStopHit = (timeExpiredZombie && pnlPct <= 0m) ||
+                              (timeExpiredConfigured && contextDefensiveExitHit);
+            var timeStopFeeGated = timeExpiredConfigured && !timeStopHit;
             var earlyInvalidationHit = holdingMinutes >= EarlyInvalidationMinutes &&
                                        mfePct < MinNetProfitToExitPercent &&
                                        pnlPct <= EarlyInvalidationMinLossPercent;
@@ -1057,7 +1064,7 @@ public sealed class BotService(
                     }
                     else if (!signals.PassesMultiTimeframeTrend(tf5, tf15))
                     {
-                        reason = "Bloqueado por tendencia 15m (EMA rapida debajo de la lenta).";
+                        reason = "Bloqueado por tendencia 5m/15m (EMA rapida debajo de la lenta).";
                     }
                     else
                     {
@@ -1084,7 +1091,7 @@ public sealed class BotService(
             {
                 label = "SOFT_BE_LISTO";
                 reason =
-                    $"Soft breakeven: MFE {mfePct:0.##}% >= {MinNetProfitToExitPercent:0.##}% y PnL actual {pnlPct:0.##}% <= {SoftBreakevenExitPercent:0.##}%.";
+                    $"Soft breakeven: MFE {mfePct:0.##}% >= {softBeArmPct:0.##}% y PnL actual {pnlPct:0.##}% <= {SoftBreakevenExitPercent:0.##}%.";
             }
             else if (earlyInvalidationHit)
             {
@@ -1099,10 +1106,9 @@ public sealed class BotService(
             }
             else if (timeStopFeeGated)
             {
-                label = "TIME_STOP_FEE_GATE";
+                label = "HOLD_WINNER";
                 reason =
-                    $"Hold {holdingMinutes} min >= {configuredHoldMinutes}: esperando PnL >= {TimeStopFeeAwareMinProfitPercent:0.##}% " +
-                    $"(actual {pnlPct:0.##}%) o defensiva; forzado a {MaxZombieHoldingMinutes} min.";
+                    $"Hold {holdingMinutes} min >= {configuredHoldMinutes}: winner/plano se deja correr a TP {bot.TakeProfitPercent:0.##}% o trailing (PnL {pnlPct:0.##}%). Zombie rojo a {MaxZombieHoldingMinutes} min.";
             }
             else if (stopLossHit || timeStopHit || contextDefensiveExitHit)
             {
@@ -1111,22 +1117,30 @@ public sealed class BotService(
                     ? "Salida de riesgo por stop loss."
                     : timeStopHit
                         ? (timeExpiredZombie
-                            ? $"Salida forzada por hold zombie ({holdingMinutes} >= {MaxZombieHoldingMinutes} min)."
-                            : "Salida de riesgo por tiempo maximo en posicion (fee-aware).")
+                            ? $"Salida forzada por hold zombie en rojo ({holdingMinutes} >= {MaxZombieHoldingMinutes} min)."
+                            : "Salida de riesgo por tiempo maximo con estructura defensiva.")
                         : DescribeMarketStructureDefensiveExit(activeStructure, pnlPct) ?? "Salida defensiva por contexto 30-90d.";
             }
-            else if (profitableNow && (sellSignal || takeProfitHit))
+            else if (takeProfitHit || (trailingArmed && bot.PeakPriceSinceEntry > 0m &&
+                                       activePrice <= bot.PeakPriceSinceEntry * (1m - (bot.TrailingStopPercent / 100m))))
             {
                 label = "SELL_LISTO";
-                reason = "Salida habilitada por señal tecnica o take profit con profit.";
+                reason = takeProfitHit
+                    ? $"Take profit {bot.TakeProfitPercent:0.##}% alcanzado."
+                    : "Trailing stop alcanzado.";
+            }
+            else if (sellSignal && (mfePct < MinNetProfitToExitPercent || pnlPct < 0m))
+            {
+                label = "INVALIDACION_REBOTE";
+                reason = "Rebote invalidado (MACD/RSI/EMA 5m) y el trade no es un winner real.";
             }
             else if (!profitableNow)
             {
-                reason = "Hay posicion, pero aun sin profit sobre precio de entrada.";
+                reason = "Hay posicion, pero aun sin profit sobre precio de entrada. Dejando correr a TP/trailing/SL.";
             }
             else
             {
-                reason = "Hay posicion con profit, esperando confirmacion de salida tecnica.";
+                reason = "Hay posicion con profit: esperando TP o trailing. No se recorta por senal MACD.";
             }
 
             result.Add(new BotSignalDiagnosticsItem

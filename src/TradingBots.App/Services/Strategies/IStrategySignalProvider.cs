@@ -8,7 +8,11 @@ public interface IStrategySignalProvider
 
     bool ShouldBuy(TechnicalMarketSnapshot technical);
 
-    bool ShouldSell(TechnicalMarketSnapshot technical);
+    /// <summary>
+    /// Invalidez de rebote / salida de estructura. <paramref name="tf5"/> opcional (EMA 5m).
+    /// No debe usarse como take-profit de micro-bounce.
+    /// </summary>
+    bool ShouldSell(TechnicalMarketSnapshot technical, TechnicalMarketSnapshot? tf5);
 
     decimal ScoreBuyCandidate(TechnicalMarketSnapshot technical);
 

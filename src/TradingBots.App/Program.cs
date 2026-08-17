@@ -596,9 +596,9 @@ using (var scope = app.Services.CreateScope())
     }
     else
     {
-        // Quality-over-quantity: flota reducida MaxAutoBots=6 (cap duro 15 en codigo).
+        // Quality-over-quantity: cap 6. MaxAutoBots=0 se respeta (halt por gate de edge).
         await db.BinanceSettings
-            .Where(x => x.MaxAutoBots <= 0 || x.MaxAutoBots > 6)
+            .Where(x => x.MaxAutoBots > 6)
             .ExecuteUpdateAsync(s => s
                 .SetProperty(x => x.MaxAutoBots, 6)
                 .SetProperty(x => x.UpdatedAtUtc, DateTime.UtcNow));

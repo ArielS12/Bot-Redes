@@ -14,10 +14,11 @@ public sealed class MeanReversionStrategySignal : IStrategySignalProvider
         t.MacdHistogram > t.PreviousMacdHistogram &&
         t.RelativeVolume >= 0.5m;
 
-    public bool ShouldSell(TechnicalMarketSnapshot t) =>
+    public bool ShouldSell(TechnicalMarketSnapshot t, TechnicalMarketSnapshot? tf5) =>
         t.Rsi14 >= 58m ||
         (t.BbMiddle > 0m && t.LastPrice >= t.BbMiddle) ||
-        t.MacdLine < t.MacdSignal;
+        t.MacdLine < t.MacdSignal ||
+        (tf5 is not null && tf5.EmaFast < tf5.EmaSlow);
 
     public decimal ScoreBuyCandidate(TechnicalMarketSnapshot t) =>
         (40m - t.Rsi14) + (0.5m - t.BbPercent) * 20m +

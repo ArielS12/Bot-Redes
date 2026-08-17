@@ -19,9 +19,9 @@ public sealed class AutoTraderService(
         "UUSDT", "UUSDC"
     };
 
-    private const decimal MinAdjustedBuyScore = 5.9m;
+    private const decimal MinAdjustedBuyScore = 7.2m;
     private const decimal MinSymbolBiasForStandardEntry = -0.20m;
-    private const decimal MinRawScoreWhenBiasNegative = 6.2m;
+    private const decimal MinRawScoreWhenBiasNegative = 7.2m;
     private const int SuggestionTtlMinutes = 10;
     private static readonly TimeSpan RecycleCooldownAfterOperationalStop = TimeSpan.FromSeconds(90);
     private static readonly TimeSpan IdleSlotReleaseWindow = TimeSpan.FromHours(48);
@@ -33,11 +33,23 @@ public sealed class AutoTraderService(
     private const decimal QuarantineAvgLossToWinRatio = 1.2m;
     private const int MaxAutoBotsHardCap = 15;
     private const decimal MinNetProfitFloor = 0.35m;
+    private const int FleetKillSwitchMinSells = 15;
+    private const decimal FleetKillSwitchMinProfitFactor = 1.0m;
+    private const decimal FleetKillSwitchMaxNetLossUsdt = -1.0m;
+    /// <summary>Ignora SELL del regimen anterior (clip a +0.50%) al evaluar el kill-switch.</summary>
+    private static readonly DateTime FleetEdgeResetUtc = new(2026, 8, 17, 12, 0, 0, DateTimeKind.Utc);
+
     public async Task<int> CreateBotsFromSuggestionsAsync()
     {
         var now = DateTime.UtcNow;
         var settings = await settingsService.GetActiveSettingsAsync();
         var maxAutoBots = Math.Clamp(settings.MaxAutoBots, 0, MaxAutoBotsHardCap);
+        var fleetKillReason = await EvaluateFleetKillSwitchAsync();
+        if (fleetKillReason is not null)
+        {
+            maxAutoBots = 0;
+        }
+
         var quarantine = await BuildSymbolQuarantineSetAsync(now);
         var existingAutoBots = await dbContext.Bots
             .Where(x => x.IsAutoManaged)
@@ -66,6 +78,24 @@ public sealed class AutoTraderService(
                 bot.State = BotState.Stopped;
                 bot.LastExecutionError =
                     $"AutoTrader: bloqueo duro {sym} hasta {EntryFilters.SolHardBlockUntilUtc:yyyy-MM-dd} UTC (anomalia/PF reciente).";
+                bot.UpdatedAtUtc = now;
+                bot.OutOfTopCycles = 0;
+                continue;
+            }
+
+            if (fleetKillReason is not null)
+            {
+                bot.State = BotState.Stopped;
+                bot.LastExecutionError = fleetKillReason;
+                bot.UpdatedAtUtc = now;
+                bot.OutOfTopCycles = 0;
+                continue;
+            }
+
+            if (!EntryFilters.IsPreferredRecoverySymbol(sym))
+            {
+                bot.State = BotState.Stopped;
+                bot.LastExecutionError = "AutoTrader: flota acotada a BTCUSDT/ETHUSDT (calidad sobre cantidad).";
                 bot.UpdatedAtUtc = now;
                 bot.OutOfTopCycles = 0;
                 continue;
@@ -118,6 +148,7 @@ public sealed class AutoTraderService(
             .Select(g => g.OrderByDescending(x => x.CreatedAtUtc).First())
             .Where(x => x.Signal == "BUY" &&
                         PassesQualityGate(x, symbolBias) &&
+                        EntryFilters.IsPreferredRecoverySymbol(x.Symbol) &&
                         !EntryFilters.IsHardBlockedSymbol(x.Symbol, now) &&
                         (!quarantine.Contains(x.Symbol) || EntryFilters.IsPreferredRecoverySymbol(x.Symbol)) &&
                         !AutopilotSymbolBlocklist.Contains(x.Symbol) &&
@@ -342,6 +373,33 @@ public sealed class AutoTraderService(
         }
 
         return true;
+    }
+
+    private async Task<string?> EvaluateFleetKillSwitchAsync()
+    {
+        var pnls = await dbContext.Trades
+            .AsNoTracking()
+            .Where(x => x.Side == "SELL" && x.ExecutedAtUtc >= FleetEdgeResetUtc)
+            .OrderByDescending(x => x.ExecutedAtUtc)
+            .Take(FleetKillSwitchMinSells)
+            .Select(x => x.RealizedPnlUsdt)
+            .ToListAsync();
+        if (pnls.Count < FleetKillSwitchMinSells)
+        {
+            return null;
+        }
+
+        var sumWins = pnls.Where(p => p > 0m).Sum();
+        var sumLossAbs = Math.Abs(pnls.Where(p => p < 0m).Sum());
+        var pf = sumLossAbs <= 0m ? (sumWins > 0m ? 999m : 0m) : sumWins / sumLossAbs;
+        var net = pnls.Sum();
+        if (pf < FleetKillSwitchMinProfitFactor || net <= FleetKillSwitchMaxNetLossUsdt)
+        {
+            return
+                $"AutoTrader: kill-switch flota (ultimas {pnls.Count} SELL PF={pf:0.00} neto={net:0.##} USDT; umbral PF>={FleetKillSwitchMinProfitFactor:0.##} y neto>{FleetKillSwitchMaxNetLossUsdt:0.##}).";
+        }
+
+        return null;
     }
 
     private async Task<Dictionary<string, decimal>> BuildSymbolBiasMapAsync(DateTime nowUtc)

@@ -47,10 +47,10 @@ public static class EntryFilters
 
     public static bool IsAutopilotAllowedSymbol(string symbol) => IsMajorSymbol(symbol);
 
-    /// <summary>Flota mínima de recuperación: no cortar por supervisor/cuarentena blanda.</summary>
+    /// <summary>Flota Live acotada: BTC/ETH USDT (USDC testnet iliquido).</summary>
     private static readonly HashSet<string> PreferredRecoverySymbols = new(StringComparer.OrdinalIgnoreCase)
     {
-        "BTCUSDT", "BTCUSDC", "ETHUSDT", "ETHUSDC"
+        "BTCUSDT", "ETHUSDT"
     };
 
     private static readonly HashSet<string> HardBlockedBases = new(StringComparer.OrdinalIgnoreCase)

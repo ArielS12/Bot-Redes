@@ -15,6 +15,13 @@ public sealed class BacktestService(
 {
     private const int WarmupBars = 200;
     private const int SnapshotWindow = 150;
+    private const decimal RoundTripCostBps = 20m;
+    private const decimal MinNetProfitToExitPercent = 2.0m;
+    private const decimal SoftBreakevenExitPercent = 0.25m;
+    private const decimal SoftBreakevenArmPercentFallback = 1.5m;
+    private const int EarlyInvalidationMinutes = 180;
+    private const decimal EarlyInvalidationMinLossPercent = -0.25m;
+    private const int MaxZombieHoldingMinutes = 480;
 
     public async Task<BacktestResult> RunAsync(BacktestRequest request, CancellationToken ct = default)
     {
@@ -47,19 +54,18 @@ public sealed class BacktestService(
         var signals = strategySignals.Get(request.Strategy);
 
         var trades = new List<BacktestTradeRecord>();
-        decimal positionQty;
-        decimal entryPrice;
-        decimal peakPrice;
-        DateTime? openedAt;
-        positionQty = 0m;
-        entryPrice = 0m;
-        peakPrice = 0m;
-        openedAt = null;
+        decimal positionQty = 0m;
+        decimal entryPrice = 0m;
+        decimal peakPrice = 0m;
+        DateTime? openedAt = null;
 
         var equity = 0m;
         var peakEquity = 0m;
         var maxDd = 0m;
         var processed = 0;
+        var trailArm = request.TrailingActivationPercent > 0m
+            ? request.TrailingActivationPercent
+            : SoftBreakevenArmPercentFallback;
 
         for (var i = WarmupBars; i < bars1m.Count; i++)
         {
@@ -93,40 +99,55 @@ public sealed class BacktestService(
             {
                 peakPrice = Math.Max(peakPrice, bar.High);
                 var pnlPct = entryPrice > 0m ? ((bar.Close - entryPrice) / entryPrice) * 100m : 0m;
-                var trailingArmed = pnlPct >= request.TrailingActivationPercent;
+                var mfePct = entryPrice > 0m ? ((peakPrice - entryPrice) / entryPrice) * 100m : 0m;
+                var holdingMinutes = openedAt is null
+                    ? 0
+                    : (int)Math.Max(0, (bar.OpenTimeUtc - openedAt.Value).TotalMinutes);
+                var trailingArmed = pnlPct >= Math.Max(trailArm, MinNetProfitToExitPercent);
                 var trailingHit = trailingArmed && bar.Close <= peakPrice * (1m - request.TrailingStopPercent / 100m);
                 var tpHit = pnlPct >= request.TakeProfitPercent;
                 var slHit = pnlPct <= -request.StopLossPercent;
-                var timeHit = openedAt is not null && request.MaxHoldingMinutes > 0 &&
-                                bar.OpenTimeUtc >= openedAt.Value.AddMinutes(request.MaxHoldingMinutes);
-                var signalSell = signals.ShouldSell(snap1);
-                var profitable = bar.Close > entryPrice;
+                var bounceInvalidated = signals.ShouldSell(snap1, snap5) &&
+                                        (mfePct < MinNetProfitToExitPercent || pnlPct < 0m);
+                var softBeHit = mfePct >= trailArm && pnlPct <= SoftBreakevenExitPercent;
+                var earlyInvalidation = holdingMinutes >= EarlyInvalidationMinutes &&
+                                        mfePct < MinNetProfitToExitPercent &&
+                                        pnlPct <= EarlyInvalidationMinLossPercent;
+                var zombieRed = holdingMinutes >= MaxZombieHoldingMinutes && pnlPct <= 0m;
 
                 string? exitReason = null;
                 if (slHit)
                 {
                     exitReason = "stop_loss";
                 }
-                else if (timeHit)
+                else if (earlyInvalidation)
+                {
+                    exitReason = "early_invalidation";
+                }
+                else if (bounceInvalidated)
+                {
+                    exitReason = "bounce_invalidation";
+                }
+                else if (softBeHit)
+                {
+                    exitReason = "soft_breakeven";
+                }
+                else if (zombieRed)
                 {
                     exitReason = "time_stop";
                 }
-                else if (trailingHit && profitable)
+                else if (trailingHit)
                 {
                     exitReason = "trailing";
                 }
-                else if (tpHit && profitable)
+                else if (tpHit)
                 {
                     exitReason = "take_profit";
-                }
-                else if (signalSell && profitable)
-                {
-                    exitReason = "signal";
                 }
 
                 if (exitReason is not null)
                 {
-                    var pnl = decimal.Round((bar.Close - entryPrice) * positionQty, 4);
+                    var pnl = ComputeNetPnl(entryPrice, bar.Close, positionQty);
                     trades.Add(new BacktestTradeRecord
                     {
                         EntryUtc = openedAt ?? bar.OpenTimeUtc,
@@ -160,7 +181,7 @@ public sealed class BacktestService(
         if (positionQty > 0m && bars1m.Count > 0)
         {
             var last = bars1m[^1];
-            var pnl = decimal.Round((last.Close - entryPrice) * positionQty, 4);
+            var pnl = ComputeNetPnl(entryPrice, last.Close, positionQty);
             trades.Add(new BacktestTradeRecord
             {
                 EntryUtc = openedAt ?? last.OpenTimeUtc,
@@ -182,14 +203,14 @@ public sealed class BacktestService(
         var closed = trades.Count;
         var winRate = closed == 0 ? 0m : decimal.Round((wins.Count * 100m) / closed, 2);
         var expectancy = closed == 0 ? 0m : equity / closed;
-        var tier = closed >= 200 && pf > 1.2m && expectancy > 0m ? "VERDE" :
+        var liveGatePass = closed >= 30 && pf >= 1.15m && expectancy > 0m;
+        var tier = liveGatePass ? "VERDE" :
             closed >= 100 && pf >= 1.0m ? "AMARILLO" : "ROJO";
-        var tierReason = tier switch
-        {
-            "VERDE" => "Backtest: muestra alta, PF>1.2, expectancy positiva.",
-            "AMARILLO" => "Backtest: muestra intermedia o PF>=1.",
-            _ => "Backtest: muestra insuficiente o edge no confirmado."
-        };
+        var tierReason = liveGatePass
+            ? "Backtest: PF>=1.15, >=30 SELL, expectancy positiva (gate Live OK)."
+            : closed >= 100 && pf >= 1.0m
+                ? "Backtest: muestra intermedia o PF>=1, por debajo del gate Live 1.15."
+                : "Backtest: muestra insuficiente o edge no confirmado (Live no debe comprar).";
 
         return new BacktestResult
         {
@@ -209,5 +230,12 @@ public sealed class BacktestService(
             CohortReason = tierReason,
             Trades = trades
         };
+    }
+
+    private static decimal ComputeNetPnl(decimal entryPrice, decimal exitPrice, decimal quantity)
+    {
+        var gross = (exitPrice - entryPrice) * quantity;
+        var fee = (entryPrice + exitPrice) * quantity * (RoundTripCostBps / 20_000m);
+        return decimal.Round(gross - fee, 4);
     }
 }

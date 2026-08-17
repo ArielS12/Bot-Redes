@@ -13,10 +13,11 @@ public sealed class MomentumStrategySignal : IStrategySignalProvider
         technical.Rsi14 >= 50m &&
         technical.Rsi14 <= 65m;
 
-    public bool ShouldSell(TechnicalMarketSnapshot technical) =>
+    public bool ShouldSell(TechnicalMarketSnapshot technical, TechnicalMarketSnapshot? tf5) =>
         technical.EmaFast < technical.EmaSlow ||
         technical.MacdLine < technical.MacdSignal ||
-        technical.Rsi14 >= 78m;
+        technical.Rsi14 >= 78m ||
+        (tf5 is not null && tf5.EmaFast < tf5.EmaSlow);
 
     public decimal ScoreBuyCandidate(TechnicalMarketSnapshot technical) =>
         (technical.MacdHistogram * 1000m) + (technical.EmaFast - technical.EmaSlow) + technical.Rsi14 +
