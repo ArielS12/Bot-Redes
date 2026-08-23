@@ -1,6 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using TradingBots.App.Data;
 using TradingBots.App.Models;
+using TradingBots.App.Services.Strategies;
 
 namespace TradingBots.App.Services;
 
@@ -12,7 +13,8 @@ public interface IAutoTraderService
 public sealed class AutoTraderService(
     AppDbContext dbContext,
     IMarketAdvisorService advisorService,
-    IBinanceSettingsService settingsService) : IAutoTraderService
+    IBinanceSettingsService settingsService,
+    IBacktestGateService backtestGate) : IAutoTraderService
 {
     private static readonly HashSet<string> AutopilotSymbolBlocklist = new(StringComparer.Ordinal)
     {
@@ -46,6 +48,10 @@ public sealed class AutoTraderService(
         var maxAutoBots = Math.Clamp(settings.MaxAutoBots, 0, MaxAutoBotsHardCap);
         var fleetKillReason = await EvaluateFleetKillSwitchAsync();
         if (fleetKillReason is not null)
+        {
+            maxAutoBots = 0;
+        }
+        else if (maxAutoBots > 0 && !backtestGate.IsLiveReady)
         {
             maxAutoBots = 0;
         }
@@ -111,7 +117,20 @@ public sealed class AutoTraderService(
             }
         }
 
-        // Solo Pullback: Momentum pausado tras 72h con PF post-cambio ~0.21.
+        // Pullback 1m retirado: detener legacy sin posicion.
+        foreach (var bot in existingAutoBots.Where(x =>
+                     x.State == BotState.Running &&
+                     x.PositionQuantity <= 0m &&
+                     x.StrategyType == StrategyType.Pullback))
+        {
+            bot.State = BotState.Stopped;
+            bot.LastExecutionError =
+                "AutoTrader: Pullback 1m retirado; flota usa PullbackHtf (15m/1h) tras gate de backtest.";
+            bot.UpdatedAtUtc = now;
+            bot.OutOfTopCycles = 0;
+        }
+
+        // Solo PullbackHtf: Momentum/MeanReversion pausados.
         foreach (var bot in existingAutoBots.Where(x =>
                      x.State == BotState.Running &&
                      x.PositionQuantity <= 0m &&
@@ -119,7 +138,7 @@ public sealed class AutoTraderService(
         {
             bot.State = BotState.Stopped;
             bot.LastExecutionError =
-                "AutoTrader: Momentum/MeanReversion pausados; flota concentrada en Pullback (edge post-fee).";
+                "AutoTrader: Momentum/MeanReversion pausados; flota concentrada en PullbackHtf.";
             bot.UpdatedAtUtc = now;
             bot.OutOfTopCycles = 0;
         }
@@ -238,9 +257,8 @@ public sealed class AutoTraderService(
                 continue;
             }
 
-            if (candidate.SuggestedStrategy != StrategyType.Pullback)
+            if (candidate.SuggestedStrategy != StrategyType.PullbackHtf)
             {
-                // Solo Pullback: Momentum/MeanReversion no se crean ni reciclan.
                 continue;
             }
 
@@ -257,9 +275,8 @@ public sealed class AutoTraderService(
                 break;
             }
 
-            const decimal sl = 1.2m;
-            const decimal tp = 4.2m;
-            var strategy = StrategyType.Pullback;
+            var htf = StrategyExitProfiles.AutoPilotParams(StrategyType.PullbackHtf);
+            var strategy = StrategyType.PullbackHtf;
 
             var recyclable = existingAutoBots
                 .Where(x => x.State == BotState.Stopped &&
@@ -279,17 +296,17 @@ public sealed class AutoTraderService(
                     continue;
                 }
 
-                recyclable.Name = $"AutoPilot-Pullback-{candidate.Symbol}";
+                recyclable.Name = $"AutoPilot-HTF-{candidate.Symbol}";
                 recyclable.BudgetUsdt = 20m;
                 recyclable.MaxPositionPerTradeUsdt = 20m;
-                recyclable.StopLossPercent = sl;
-                recyclable.TakeProfitPercent = tp;
-                recyclable.TakeProfit1Percent = tp;
+                recyclable.StopLossPercent = htf.Sl;
+                recyclable.TakeProfitPercent = htf.Tp;
+                recyclable.TakeProfit1Percent = htf.Tp;
                 recyclable.TakeProfit1SellPercent = 0m;
-                recyclable.TakeProfit2Percent = tp;
-                recyclable.TrailingActivationPercent = Math.Max(1.5m, MinNetProfitFloor);
-                recyclable.TrailingStopPercent = 0.9m;
-                recyclable.MaxHoldingMinutes = 360;
+                recyclable.TakeProfit2Percent = htf.Tp;
+                recyclable.TrailingActivationPercent = Math.Max(htf.TrailAct, MinNetProfitFloor);
+                recyclable.TrailingStopPercent = htf.TrailStop;
+                recyclable.MaxHoldingMinutes = htf.MaxHold;
                 recyclable.MaxDailyLossUsdt = 2m;
                 recyclable.MaxExposurePercent = 100m;
                 recyclable.CooldownMinutesAfterLoss = 30;
@@ -317,17 +334,17 @@ public sealed class AutoTraderService(
             var startUtc = DateTime.UtcNow;
             dbContext.Bots.Add(new TradingBot
             {
-                Name = $"AutoPilot-Pullback-{candidate.Symbol}",
+                Name = $"AutoPilot-HTF-{candidate.Symbol}",
                 BudgetUsdt = 20m,
                 MaxPositionPerTradeUsdt = 20m,
-                StopLossPercent = sl,
-                TakeProfitPercent = tp,
-                TakeProfit1Percent = tp,
+                StopLossPercent = htf.Sl,
+                TakeProfitPercent = htf.Tp,
+                TakeProfit1Percent = htf.Tp,
                 TakeProfit1SellPercent = 0m,
-                TakeProfit2Percent = tp,
-                TrailingActivationPercent = Math.Max(1.5m, MinNetProfitFloor),
-                TrailingStopPercent = 0.9m,
-                MaxHoldingMinutes = 360,
+                TakeProfit2Percent = htf.Tp,
+                TrailingActivationPercent = Math.Max(htf.TrailAct, MinNetProfitFloor),
+                TrailingStopPercent = htf.TrailStop,
+                MaxHoldingMinutes = htf.MaxHold,
                 MaxDailyLossUsdt = 2m,
                 MaxExposurePercent = 100m,
                 CooldownMinutesAfterLoss = 30,

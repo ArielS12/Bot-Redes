@@ -92,9 +92,12 @@ builder.Services.AddScoped<IControlAutotuneService, ControlAutotuneService>();
 builder.Services.AddScoped<IMarketHistoryService, MarketHistoryService>();
 builder.Services.AddScoped<IMarketStructureService, MarketStructureService>();
 builder.Services.AddScoped<IBacktestService, BacktestService>();
+builder.Services.AddSingleton<IBacktestGateService, BacktestGateService>();
+builder.Services.AddHostedService<BacktestGateHostedService>();
 builder.Services.AddScoped<IBotMaintenanceService, BotMaintenanceService>();
 builder.Services.AddSingleton<IStrategySignalProvider, MomentumStrategySignal>();
 builder.Services.AddSingleton<IStrategySignalProvider, PullbackStrategySignal>();
+builder.Services.AddSingleton<IStrategySignalProvider, PullbackHtfStrategySignal>();
 builder.Services.AddSingleton<IStrategySignalProvider, MeanReversionStrategySignal>();
 builder.Services.AddSingleton<IStrategySignalRegistry, StrategySignalRegistry>();
 builder.Services.AddSingleton<IRuntimeStatusService, RuntimeStatusService>();
@@ -1127,6 +1130,29 @@ app.MapPost("/api/market/history/sync", async (string? symbolCsv, IMarketHistory
 
 app.MapPost("/api/backtest/run", async (BacktestRequest request, IBacktestService backtest) =>
     Results.Ok(await backtest.RunAsync(request)));
+
+app.MapGet("/api/backtest/gate-status", (IBacktestGateService gate) =>
+    Results.Ok(new
+    {
+        liveReady = gate.IsLiveReady,
+        summary = gate.Summary,
+        evaluatedAtUtc = gate.EvaluatedAtUtc,
+        symbols = gate.SymbolResults.Select(x => new
+        {
+            x.Symbol,
+            x.ProfitFactor,
+            x.ClosedTrades,
+            x.NetPnlUsdt,
+            x.CohortTier,
+            x.CohortReason
+        })
+    }));
+
+app.MapPost("/api/backtest/gate-refresh", async (IBacktestGateService gate) =>
+{
+    await gate.EvaluateAsync();
+    return Results.Ok(new { liveReady = gate.IsLiveReady, summary = gate.Summary });
+});
 
 app.MapGet("/api/bots/regime-status", async (IBotMaintenanceService maintenance) =>
     Results.Ok(await maintenance.GetBotRegimeStatusAsync()));

@@ -24,7 +24,9 @@ public enum StrategyType
 {
     Momentum = 0,
     Pullback = 1,
-    MeanReversion = 2
+    MeanReversion = 2,
+    /// <summary>Pullback 15m con gate 1h (menos churn que 1m).</summary>
+    PullbackHtf = 3
 }
 
 public sealed class TradingBot

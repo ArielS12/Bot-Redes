@@ -195,8 +195,8 @@ public sealed class MarketAdvisorService(
             return null;
         }
 
-        // AutoPilot concentrado en Pullback (Momentum pausado por edge negativo post-fee).
-        var strategy = StrategyType.Pullback;
+        // AutoPilot concentrado en PullbackHtf (15m/1h); Pullback 1m retirado por churn post-fee.
+        var strategy = StrategyType.PullbackHtf;
         var trendStrength = ScoreTrend(t1, t5, t15);
         var momentumStrength = ScoreMomentum(t1, ticker.PriceChangePercent24h);
         var liquidityStrength = ScoreLiquidity(ticker.QuoteVolume24h, t1.RelativeVolume);

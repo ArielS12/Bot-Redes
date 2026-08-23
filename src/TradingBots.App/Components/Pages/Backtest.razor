@@ -7,7 +7,7 @@
 
 <PageTitle>Backtest</PageTitle>
 <h1 class="tb-page-title">Backtest de estrategia</h1>
-<p class="text-muted">Simula entradas/salidas en velas 1m historicas (Binance) con las mismas reglas que el motor en vivo.</p>
+<p class="text-muted">Simula entradas/salidas historicas (Binance). Pullback HTF usa velas 15m con gate 1h; Pullback clasico usa 1m.</p>
 
 <div class="card mb-4 border-secondary">
     <div class="card-body">
@@ -20,7 +20,8 @@
                 <label class="form-label">Estrategia</label>
                 <select class="form-select" @bind="_strategy">
                     <option value="@StrategyType.Momentum">Momentum</option>
-                    <option value="@StrategyType.Pullback">Pullback</option>
+                    <option value="@StrategyType.Pullback">Pullback (1m)</option>
+                    <option value="@StrategyType.PullbackHtf">Pullback HTF (15m/1h)</option>
                     <option value="@StrategyType.MeanReversion">MeanReversion</option>
                 </select>
             </div>
@@ -140,8 +141,8 @@
 
 @code {
     private string _symbol = "BTCUSDT";
-    private StrategyType _strategy = StrategyType.Pullback;
-    private DateTime _from = DateTime.UtcNow.Date.AddDays(-14);
+    private StrategyType _strategy = StrategyType.PullbackHtf;
+    private DateTime _from = DateTime.UtcNow.Date.AddDays(-30);
     private DateTime _to = DateTime.UtcNow.Date;
     private decimal _quote = 20m;
     private bool _running;

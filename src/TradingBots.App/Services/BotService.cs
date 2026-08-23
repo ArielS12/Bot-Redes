@@ -334,11 +334,19 @@ public sealed class BotService(
         var technicalBySymbol = await marketService.GetTechnicalSnapshotsAsync(symbols, "1m", 200);
         var technical5mBySymbol = await marketService.GetTechnicalSnapshotsAsync(symbols, "5m", 200);
         var technical15mBySymbol = await marketService.GetTechnicalSnapshotsAsync(symbols, "15m", 200);
+        var needsHourly = StrategyTimeframeProfile.RequiresHourlySnapshots(bots.Select(x => x.StrategyType));
+        var technical1hBySymbol = needsHourly
+            ? await marketService.GetTechnicalSnapshotsAsync(symbols, "1h", 200)
+            : new Dictionary<string, TechnicalMarketSnapshot>();
         var regimeBySymbol = await marketHistory.GetRegimesAsync(symbols);
         var structureBySymbol = await marketStructure.GetStructuresAsync(symbols);
         foreach (var bot in bots)
         {
             var signals = strategySignals.Get(bot.StrategyType);
+            var profile = StrategyTimeframeProfile.For(bot.StrategyType);
+            var minNetProfit = StrategyExitProfiles.MinNetProfitPercent(bot.StrategyType);
+            var earlyInvalidationMinutes = StrategyExitProfiles.EarlyInvalidationMinutes(bot.StrategyType);
+            var maxZombieHoldingMinutes = StrategyExitProfiles.MaxZombieHoldingMinutes(bot.StrategyType);
             var selected = bot.Symbols
                 .Where(marketSnapshot.ContainsKey)
                 .Select(symbol => new { Symbol = symbol, Ticker = marketSnapshot[symbol] })
@@ -386,29 +394,45 @@ public sealed class BotService(
             }
 
             var buyCandidate = selected
-                .Where(x => technicalBySymbol.ContainsKey(x.Symbol))
-                .Select(x => new { x.Symbol, Snapshot = technicalBySymbol[x.Symbol] })
+                .Select(x => new
+                {
+                    x.Symbol,
+                    Snapshot = StrategySnapshotHelper.Resolve(
+                        profile.EntryInterval, x.Symbol,
+                        technicalBySymbol, technical5mBySymbol, technical15mBySymbol, technical1hBySymbol)
+                })
+                .Where(x => x.Snapshot is not null)
                 .Where(x =>
                 {
-                    if (!technical5mBySymbol.TryGetValue(x.Symbol, out var tf5) || !technical15mBySymbol.TryGetValue(x.Symbol, out var tf15))
+                    var tf5 = StrategySnapshotHelper.Resolve(
+                        profile.Tf5Interval, x.Symbol,
+                        technicalBySymbol, technical5mBySymbol, technical15mBySymbol, technical1hBySymbol);
+                    var tf15 = StrategySnapshotHelper.Resolve(
+                        profile.Tf15Interval, x.Symbol,
+                        technicalBySymbol, technical5mBySymbol, technical15mBySymbol, technical1hBySymbol);
+                    if (tf5 is null || tf15 is null)
                     {
                         return false;
                     }
 
                     regimeBySymbol.TryGetValue(x.Symbol, out var regime);
-                    return signals.ShouldBuy(x.Snapshot) &&
+                    return signals.ShouldBuy(x.Snapshot!) &&
                            signals.PassesMultiTimeframeTrend(tf5, tf15) &&
-                           EntryFilters.PassesLiquidityAndVolume(x.Symbol, marketSnapshot[x.Symbol], x.Snapshot) &&
-                           signals.PassesShortRegimeFilter(x.Snapshot, marketSnapshot[x.Symbol]) &&
+                           EntryFilters.PassesLiquidityAndVolume(x.Symbol, marketSnapshot[x.Symbol], x.Snapshot!) &&
+                           signals.PassesShortRegimeFilter(x.Snapshot!, marketSnapshot[x.Symbol]) &&
                            signals.PassesLongTermRegime(regime) &&
                            PassesMarketStructureForBuy(structureBySymbol.GetValueOrDefault(x.Symbol));
                 })
-                .OrderByDescending(x => signals.ScoreBuyCandidate(x.Snapshot) + ScoreMarketStructureBonus(structureBySymbol.GetValueOrDefault(x.Symbol)))
+                .OrderByDescending(x => signals.ScoreBuyCandidate(x.Snapshot!) + ScoreMarketStructureBonus(structureBySymbol.GetValueOrDefault(x.Symbol)))
                 .FirstOrDefault();
             var buySignal = buyCandidate is not null;
-            var activeTechnical = technicalBySymbol.TryGetValue(activeSymbol, out var t) ? t : null;
-            technical5mBySymbol.TryGetValue(activeSymbol, out var activeTf5);
-            var sellSignal = activeTechnical is not null && signals.ShouldSell(activeTechnical, activeTf5);
+            var activeTechnical = StrategySnapshotHelper.Resolve(
+                profile.EntryInterval, activeSymbol,
+                technicalBySymbol, technical5mBySymbol, technical15mBySymbol, technical1hBySymbol);
+            var activeSellContext = StrategySnapshotHelper.Resolve(
+                profile.SellContextInterval, activeSymbol,
+                technicalBySymbol, technical5mBySymbol, technical15mBySymbol, technical1hBySymbol);
+            var sellSignal = activeTechnical is not null && signals.ShouldSell(activeTechnical, activeSellContext);
             var effectiveStopPct = activeTechnical is not null
                 ? ComputeEffectiveStopLossPercent(bot, activeTechnical)
                 : bot.StopLossPercent;
@@ -434,23 +458,23 @@ public sealed class BotService(
                                  pnlPct > roundTripCostPct &&
                                  bot.PositionQuantity > 0m;
             var breakevenStopHit = breakevenArmed && activePrice < bot.AverageEntryPrice;
-            var trailingArmed = pnlPct >= Math.Max(bot.TrailingActivationPercent, MinNetProfitToExitPercent) &&
+            var trailingArmed = pnlPct >= Math.Max(bot.TrailingActivationPercent, minNetProfit) &&
                                 bot.PeakPriceSinceEntry > 0m;
             var trailingStopHit = trailingArmed &&
                                   activePrice <= bot.PeakPriceSinceEntry * (1m - (bot.TrailingStopPercent / 100m));
             var configuredHoldMinutes = bot.MaxHoldingMinutes > 0 ? bot.MaxHoldingMinutes : 360;
             var timeExpiredConfigured = holdingMinutes >= configuredHoldMinutes;
-            var timeExpiredZombie = holdingMinutes >= MaxZombieHoldingMinutes;
+            var timeExpiredZombie = holdingMinutes >= maxZombieHoldingMinutes;
             var activeStructure = structureBySymbol.GetValueOrDefault(activeSymbol);
             var contextDefensiveExitHit = ShouldMarketStructureDefensiveExit(activeStructure, pnlPct);
-            // Time-stop: a MaxHolding solo defensiva de estructura; a 480m forzar solo si PnL <= 0.
+            // Time-stop: a MaxHolding solo defensiva de estructura; zombie solo si PnL <= 0.
             var timeStopHit = (timeExpiredZombie && pnlPct <= 0m) ||
                               (timeExpiredConfigured && contextDefensiveExitHit);
-            var earlyInvalidationHit = holdingMinutes >= EarlyInvalidationMinutes &&
-                                       mfePct < MinNetProfitToExitPercent &&
+            var earlyInvalidationHit = holdingMinutes >= earlyInvalidationMinutes &&
+                                       mfePct < minNetProfit &&
                                        pnlPct <= EarlyInvalidationMinLossPercent;
             var anomalyLossHit = bot.PositionQuantity > 0m && pnlPct <= AnomalyLossPercent;
-            var netProfitableEnough = pnlPct >= MinNetProfitToExitPercent;
+            var netProfitableEnough = pnlPct >= minNetProfit;
             var investedCapital = bot.PositionQuantity > 0m && bot.AverageEntryPrice > 0m
                 ? bot.PositionQuantity * bot.AverageEntryPrice
                 : 0m;
@@ -458,7 +482,8 @@ public sealed class BotService(
             var remainingBudget = Math.Max(0m, exposureLimit - investedCapital);
             var blockPullbackVolatileDay = false;
             var blockPullbackEmaSpread = false;
-            if (buyCandidate is not null && bot.StrategyType == StrategyType.Pullback)
+            if (buyCandidate is not null &&
+                bot.StrategyType is StrategyType.Pullback or StrategyType.PullbackHtf)
             {
                 var buyTicker = marketSnapshot[buyCandidate.Symbol];
                 var abs24 = Math.Abs(buyTicker.PriceChangePercent24h);
@@ -654,7 +679,7 @@ public sealed class BotService(
 
                 // Bounce fallido: ShouldSell solo cierra si nunca fue un winner real o esta bajo entrada.
                 var bounceInvalidationHit = sellSignal &&
-                                            (mfePct < MinNetProfitToExitPercent || pnlPct < 0m);
+                                            (mfePct < minNetProfit || pnlPct < 0m);
                 // Salidas de riesgo (SL/time-stop/contexto/BE/invalidacion/anomalia) sin exigir profit tactico.
                 var riskExit = stopLossExit || breakevenStopHit || softBreakevenHit || timeStopHit ||
                                contextDefensiveExitHit || earlyInvalidationHit || anomalyLossHit ||
@@ -907,6 +932,10 @@ public sealed class BotService(
         var technicalBySymbol = await marketService.GetTechnicalSnapshotsAsync(allSymbols, "1m", 200);
         var technical5mBySymbol = await marketService.GetTechnicalSnapshotsAsync(allSymbols, "5m", 200);
         var technical15mBySymbol = await marketService.GetTechnicalSnapshotsAsync(allSymbols, "15m", 200);
+        var needsHourlyDiag = StrategyTimeframeProfile.RequiresHourlySnapshots(bots.Select(x => x.StrategyType));
+        var technical1hBySymbol = needsHourlyDiag
+            ? await marketService.GetTechnicalSnapshotsAsync(allSymbols, "1h", 200)
+            : new Dictionary<string, TechnicalMarketSnapshot>();
         var regimeBySymbol = await marketHistory.GetRegimesAsync(allSymbols);
         var structureBySymbol = await marketStructure.GetStructuresAsync(allSymbols);
         var result = new List<BotSignalDiagnosticsItem>();
@@ -914,9 +943,15 @@ public sealed class BotService(
         foreach (var bot in bots)
         {
             var signals = strategySignals.Get(bot.StrategyType);
+            var profile = StrategyTimeframeProfile.For(bot.StrategyType);
+            var minNetProfit = StrategyExitProfiles.MinNetProfitPercent(bot.StrategyType);
+            var earlyInvalidationMinutes = StrategyExitProfiles.EarlyInvalidationMinutes(bot.StrategyType);
+            var maxZombieHoldingMinutes = StrategyExitProfiles.MaxZombieHoldingMinutes(bot.StrategyType);
             var selected = bot.Symbols
                 .Where(marketSnapshot.ContainsKey)
-                .Where(technicalBySymbol.ContainsKey)
+                .Where(s => StrategySnapshotHelper.Resolve(
+                    profile.EntryInterval, s,
+                    technicalBySymbol, technical5mBySymbol, technical15mBySymbol, technical1hBySymbol) is not null)
                 .ToList();
             if (selected.Count == 0)
             {
@@ -931,19 +966,23 @@ public sealed class BotService(
             }
 
             var activeSymbol = bot.PositionQuantity > 0m && !string.IsNullOrWhiteSpace(bot.PositionSymbol) &&
-                               technicalBySymbol.ContainsKey(bot.PositionSymbol)
+                               marketSnapshot.ContainsKey(bot.PositionSymbol)
                 ? bot.PositionSymbol
                 : selected[0];
             var activePrice = marketSnapshot[activeSymbol].LastPrice;
-            var activeTechnical = technicalBySymbol[activeSymbol];
+            var activeTechnical = StrategySnapshotHelper.Resolve(
+                profile.EntryInterval, activeSymbol,
+                technicalBySymbol, technical5mBySymbol, technical15mBySymbol, technical1hBySymbol)!;
+            var activeSellContext = StrategySnapshotHelper.Resolve(
+                profile.SellContextInterval, activeSymbol,
+                technicalBySymbol, technical5mBySymbol, technical15mBySymbol, technical1hBySymbol);
             var investedCapital = bot.PositionQuantity > 0m && bot.AverageEntryPrice > 0m
                 ? bot.PositionQuantity * bot.AverageEntryPrice
                 : 0m;
             var exposureLimit = bot.BudgetUsdt * (Math.Clamp(bot.MaxExposurePercent, 1m, 100m) / 100m);
             var remainingBudget = Math.Max(0m, exposureLimit - investedCapital);
             var profitableNow = bot.PositionQuantity > 0m && bot.AverageEntryPrice > 0m && activePrice > bot.AverageEntryPrice;
-            technical5mBySymbol.TryGetValue(activeSymbol, out var activeTf5);
-            var sellSignal = signals.ShouldSell(activeTechnical, activeTf5);
+            var sellSignal = signals.ShouldSell(activeTechnical, activeSellContext);
             var takeProfitHit = bot.PositionQuantity > 0m && bot.AverageEntryPrice > 0m &&
                                 ((activePrice - bot.AverageEntryPrice) / bot.AverageEntryPrice) * 100m >= bot.TakeProfitPercent;
             var pnlPct = bot.PositionQuantity > 0m && bot.AverageEntryPrice > 0m
@@ -962,14 +1001,14 @@ public sealed class BotService(
             var trailingArmed = pnlPct >= bot.TrailingActivationPercent && bot.PeakPriceSinceEntry > 0m;
             var configuredHoldMinutes = bot.MaxHoldingMinutes > 0 ? bot.MaxHoldingMinutes : 360;
             var timeExpiredConfigured = holdingMinutes >= configuredHoldMinutes;
-            var timeExpiredZombie = holdingMinutes >= MaxZombieHoldingMinutes;
+            var timeExpiredZombie = holdingMinutes >= maxZombieHoldingMinutes;
             var activeStructure = structureBySymbol.GetValueOrDefault(activeSymbol);
             var contextDefensiveExitHit = ShouldMarketStructureDefensiveExit(activeStructure, pnlPct);
             var timeStopHit = (timeExpiredZombie && pnlPct <= 0m) ||
                               (timeExpiredConfigured && contextDefensiveExitHit);
             var timeStopFeeGated = timeExpiredConfigured && !timeStopHit;
-            var earlyInvalidationHit = holdingMinutes >= EarlyInvalidationMinutes &&
-                                       mfePct < MinNetProfitToExitPercent &&
+            var earlyInvalidationHit = holdingMinutes >= earlyInvalidationMinutes &&
+                                       mfePct < minNetProfit &&
                                        pnlPct <= EarlyInvalidationMinLossPercent;
             var anomalyLossHit = bot.PositionQuantity > 0m && pnlPct <= AnomalyLossPercent;
             var stopLossDeferReason = string.Empty;
@@ -978,16 +1017,29 @@ public sealed class BotService(
             var tp1Ready = !bot.TakeProfit1Taken && pnlPct >= bot.TakeProfit1Percent;
             var tp2Ready = pnlPct >= bot.TakeProfit2Percent;
             var buyCandidate = selected
-                .Select(symbol => new { Symbol = symbol, Snapshot = technicalBySymbol[symbol] })
+                .Select(symbol => new
+                {
+                    Symbol = symbol,
+                    Snapshot = StrategySnapshotHelper.Resolve(
+                        profile.EntryInterval, symbol,
+                        technicalBySymbol, technical5mBySymbol, technical15mBySymbol, technical1hBySymbol)!
+                })
                 .Where(x =>
-                    technical5mBySymbol.TryGetValue(x.Symbol, out var tf5) &&
-                    technical15mBySymbol.TryGetValue(x.Symbol, out var tf15) &&
-                    signals.ShouldBuy(x.Snapshot) &&
-                    signals.PassesMultiTimeframeTrend(tf5, tf15) &&
-                    EntryFilters.PassesLiquidityAndVolume(x.Symbol, marketSnapshot[x.Symbol], x.Snapshot) &&
-                    signals.PassesShortRegimeFilter(x.Snapshot, marketSnapshot[x.Symbol]) &&
-                    signals.PassesLongTermRegime(regimeBySymbol.GetValueOrDefault(x.Symbol)) &&
-                    PassesMarketStructureForBuy(structureBySymbol.GetValueOrDefault(x.Symbol)))
+                {
+                    var tf5 = StrategySnapshotHelper.Resolve(
+                        profile.Tf5Interval, x.Symbol,
+                        technicalBySymbol, technical5mBySymbol, technical15mBySymbol, technical1hBySymbol);
+                    var tf15 = StrategySnapshotHelper.Resolve(
+                        profile.Tf15Interval, x.Symbol,
+                        technicalBySymbol, technical5mBySymbol, technical15mBySymbol, technical1hBySymbol);
+                    return tf5 is not null && tf15 is not null &&
+                           signals.ShouldBuy(x.Snapshot) &&
+                           signals.PassesMultiTimeframeTrend(tf5, tf15) &&
+                           EntryFilters.PassesLiquidityAndVolume(x.Symbol, marketSnapshot[x.Symbol], x.Snapshot) &&
+                           signals.PassesShortRegimeFilter(x.Snapshot, marketSnapshot[x.Symbol]) &&
+                           signals.PassesLongTermRegime(regimeBySymbol.GetValueOrDefault(x.Symbol)) &&
+                           PassesMarketStructureForBuy(structureBySymbol.GetValueOrDefault(x.Symbol));
+                })
                 .OrderByDescending(x => signals.ScoreBuyCandidate(x.Snapshot) + ScoreMarketStructureBonus(structureBySymbol.GetValueOrDefault(x.Symbol)))
                 .FirstOrDefault();
 
@@ -1004,7 +1056,7 @@ public sealed class BotService(
                 {
                     var blockPullbackVolatileDay = false;
                     var blockPullbackEmaSpread = false;
-                    if (bot.StrategyType == StrategyType.Pullback)
+                    if (bot.StrategyType is StrategyType.Pullback or StrategyType.PullbackHtf)
                     {
                         var abs24 = Math.Abs(marketSnapshot[buyCandidate.Symbol].PriceChangePercent24h);
                         blockPullbackVolatileDay = abs24 >= StrategySignalConstants.PullbackMaxAbsChange24hPercent;
