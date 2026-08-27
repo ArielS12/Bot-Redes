@@ -452,7 +452,8 @@ public sealed class BotService(
                 ? bot.TrailingActivationPercent
                 : SoftBreakevenArmPercentFallback;
             var softBreakevenArmed = bot.PositionQuantity > 0m && mfePct >= softBeArmPct;
-            var softBreakevenHit = softBreakevenArmed && pnlPct <= SoftBreakevenExitPercent;
+            var softBreakevenHit = softBreakevenArmed &&
+                                   pnlPct <= StrategyExitProfiles.SoftBreakevenExitPercent(bot.StrategyType);
             // BE profundo legacy: 70% del camino al TP.
             var breakevenArmed = progressToTp >= 0.70m &&
                                  pnlPct > roundTripCostPct &&
@@ -678,8 +679,11 @@ public sealed class BotService(
                 }
 
                 // Bounce fallido: ShouldSell solo cierra si nunca fue un winner real o esta bajo entrada.
+                var minHoldBounce = StrategyExitProfiles.MinHoldBeforeBounceInvalidationMinutes(bot.StrategyType);
                 var bounceInvalidationHit = sellSignal &&
-                                            (mfePct < minNetProfit || pnlPct < 0m);
+                                            holdingMinutes >= minHoldBounce &&
+                                            mfePct < minNetProfit &&
+                                            pnlPct <= EarlyInvalidationMinLossPercent;
                 // Salidas de riesgo (SL/time-stop/contexto/BE/invalidacion/anomalia) sin exigir profit tactico.
                 var riskExit = stopLossExit || breakevenStopHit || softBreakevenHit || timeStopHit ||
                                contextDefensiveExitHit || earlyInvalidationHit || anomalyLossHit ||
@@ -997,7 +1001,8 @@ public sealed class BotService(
                 ? bot.TrailingActivationPercent
                 : SoftBreakevenArmPercentFallback;
             var softBreakevenArmed = bot.PositionQuantity > 0m && mfePct >= softBeArmPct;
-            var softBreakevenHit = softBreakevenArmed && pnlPct <= SoftBreakevenExitPercent;
+            var softBreakevenHit = softBreakevenArmed &&
+                                   pnlPct <= StrategyExitProfiles.SoftBreakevenExitPercent(bot.StrategyType);
             var trailingArmed = pnlPct >= bot.TrailingActivationPercent && bot.PeakPriceSinceEntry > 0m;
             var configuredHoldMinutes = bot.MaxHoldingMinutes > 0 ? bot.MaxHoldingMinutes : 360;
             var timeExpiredConfigured = holdingMinutes >= configuredHoldMinutes;

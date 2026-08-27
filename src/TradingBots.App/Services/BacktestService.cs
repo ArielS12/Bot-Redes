@@ -296,9 +296,13 @@ public sealed class BacktestService(
                 var trailingHit = trailingArmed && bar.Close <= peakPrice * (1m - trailStop / 100m);
                 var tpHit = pnlPct >= takeProfit;
                 var slHit = pnlPct <= -stopLoss;
-                var bounceInvalidated = signals.ShouldSell(snap15, snap1h) &&
-                                        (mfePct < minNetProfit || pnlPct < 0m);
-                var softBeHit = mfePct >= trailAct && pnlPct <= SoftBreakevenExitPercent;
+                var minHoldBounce = StrategyExitProfiles.MinHoldBeforeBounceInvalidationMinutes(StrategyType.PullbackHtf);
+                var softBeExit = StrategyExitProfiles.SoftBreakevenExitPercent(StrategyType.PullbackHtf);
+                var bounceInvalidated = holdingMinutes >= minHoldBounce &&
+                                        signals.ShouldSell(snap15, snap1h) &&
+                                        mfePct < minNetProfit &&
+                                        pnlPct <= EarlyInvalidationMinLossPercent;
+                var softBeHit = mfePct >= trailAct && pnlPct <= softBeExit;
                 var earlyInvHit = holdingMinutes >= earlyInvalidation &&
                                   mfePct < minNetProfit &&
                                   pnlPct <= EarlyInvalidationMinLossPercent;

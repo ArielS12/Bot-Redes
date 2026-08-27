@@ -31,11 +31,24 @@ public static class StrategyExitProfiles
         _ => 480
     };
 
+    public static decimal SoftBreakevenExitPercent(StrategyType strategy) => strategy switch
+    {
+        StrategyType.PullbackHtf => 0.45m,
+        _ => 0.25m
+    };
+
+    /// <summary>Minutos minimos en posicion antes de permitir bounce_invalidation HTF.</summary>
+    public static int MinHoldBeforeBounceInvalidationMinutes(StrategyType strategy) => strategy switch
+    {
+        StrategyType.PullbackHtf => 90,
+        _ => 0
+    };
+
     public static (decimal Sl, decimal Tp, decimal TrailAct, decimal TrailStop, int MaxHold) AutoPilotParams(
         StrategyType strategy) => strategy switch
     {
-        // SL 1.2 / TP 2.8 ≈ 2.3R; trail arma en +1.4 y protege 0.7.
-        StrategyType.PullbackHtf => (1.2m, 2.8m, 1.4m, 0.7m, 960),
+        // SL 1.0 / TP 3.0 ≈ 3R; trail arma en +1.6.
+        StrategyType.PullbackHtf => (1.0m, 3.0m, 1.6m, 0.8m, 1200),
         _ => (1.2m, 4.2m, 1.5m, 0.9m, 360)
     };
 }
