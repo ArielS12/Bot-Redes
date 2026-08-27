@@ -599,11 +599,16 @@ using (var scope = app.Services.CreateScope())
     }
     else
     {
-        // Quality-over-quantity: cap 6. MaxAutoBots=0 se respeta (halt por gate de edge).
+        // Flota segura HTF: cap 2. MaxAutoBots=0 se respeta hasta que el gate reabra.
         await db.BinanceSettings
-            .Where(x => x.MaxAutoBots > 6)
+            .Where(x => x.MaxAutoBots > StrategyExitProfiles.SafeLiveMaxAutoBots)
             .ExecuteUpdateAsync(s => s
-                .SetProperty(x => x.MaxAutoBots, 6)
+                .SetProperty(x => x.MaxAutoBots, StrategyExitProfiles.SafeLiveMaxAutoBots)
+                .SetProperty(x => x.UpdatedAtUtc, DateTime.UtcNow));
+        await db.BinanceSettings
+            .Where(x => x.GlobalMaxDailyLossUsdt > 3m)
+            .ExecuteUpdateAsync(s => s
+                .SetProperty(x => x.GlobalMaxDailyLossUsdt, 3m)
                 .SetProperty(x => x.UpdatedAtUtc, DateTime.UtcNow));
     }
 }

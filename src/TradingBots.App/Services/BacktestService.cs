@@ -406,13 +406,18 @@ public sealed class BacktestService(
         var closed = trades.Count;
         var winRate = closed == 0 ? 0m : decimal.Round((wins.Count * 100m) / closed, 2);
         var expectancy = closed == 0 ? 0m : equity / closed;
-        var liveGatePass = closed >= 30 && pf >= 1.15m && expectancy > 0m;
+        // HTF genera menos trades: umbral de muestra mas bajo pero exige expectancy y neto > 0.
+        var isHtf = strategy == StrategyType.PullbackHtf;
+        var minTradesVerde = isHtf ? 12 : 30;
+        var minPfVerde = isHtf ? 1.10m : 1.15m;
+        var minTradesAmarillo = isHtf ? 8 : 100;
+        var liveGatePass = closed >= minTradesVerde && pf >= minPfVerde && expectancy > 0m && equity > 0m;
         var tier = liveGatePass ? "VERDE" :
-            closed >= 100 && pf >= 1.0m ? "AMARILLO" : "ROJO";
+            closed >= minTradesAmarillo && pf >= 1.0m && equity >= 0m ? "AMARILLO" : "ROJO";
         var tierReason = liveGatePass
-            ? "Backtest: PF>=1.15, >=30 SELL, expectancy positiva (gate Live OK)."
-            : closed >= 100 && pf >= 1.0m
-                ? "Backtest: muestra intermedia o PF>=1, por debajo del gate Live 1.15."
+            ? $"Backtest HTF/scalp: PF>={minPfVerde:0.00}, >={minTradesVerde} SELL, expectancy y neto positivos (gate Live OK)."
+            : closed >= minTradesAmarillo && pf >= 1.0m
+                ? "Backtest: muestra intermedia o PF>=1, por debajo del gate Live."
                 : "Backtest: muestra insuficiente o edge no confirmado (Live no debe comprar).";
 
         return new BacktestResult

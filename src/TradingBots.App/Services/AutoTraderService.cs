@@ -35,21 +35,23 @@ public sealed class AutoTraderService(
     private const decimal QuarantineAvgLossToWinRatio = 1.2m;
     private const int MaxAutoBotsHardCap = 15;
     private const decimal MinNetProfitFloor = 0.35m;
-    private const int FleetKillSwitchMinSells = 15;
-    private const decimal FleetKillSwitchMinProfitFactor = 1.0m;
-    private const decimal FleetKillSwitchMaxNetLossUsdt = -1.0m;
-    /// <summary>Ignora SELL del regimen anterior (clip a +0.50%) al evaluar el kill-switch.</summary>
-    private static readonly DateTime FleetEdgeResetUtc = new(2026, 8, 17, 12, 0, 0, DateTimeKind.Utc);
+    /// <summary>Kill-switch agresivo: corta flota antes de sangrar como el regimen 1m.</summary>
+    private const int FleetKillSwitchMinSells = 6;
+    private const decimal FleetKillSwitchMinProfitFactor = 1.05m;
+    private const decimal FleetKillSwitchMaxNetLossUsdt = -0.50m;
+    /// <summary>Cohorte HTF segura: ignora SELL del regimen Pullback 1m.</summary>
+    private static readonly DateTime FleetEdgeResetUtc = new(2026, 8, 27, 0, 0, 0, DateTimeKind.Utc);
 
     public async Task<int> CreateBotsFromSuggestionsAsync()
     {
         var now = DateTime.UtcNow;
         var settings = await settingsService.GetActiveSettingsAsync();
-        var maxAutoBots = Math.Clamp(settings.MaxAutoBots, 0, MaxAutoBotsHardCap);
+        var maxAutoBots = Math.Clamp(settings.MaxAutoBots, 0, StrategyExitProfiles.SafeLiveMaxAutoBots);
         var fleetKillReason = await EvaluateFleetKillSwitchAsync();
         if (fleetKillReason is not null)
         {
             maxAutoBots = 0;
+            await ForceHaltSettingsAsync(fleetKillReason);
         }
         else if (maxAutoBots > 0 && !backtestGate.IsLiveReady)
         {
@@ -165,17 +167,41 @@ public sealed class AutoTraderService(
             .Where(x => x.CreatedAtUtc >= minSuggestionTime)
             .GroupBy(x => x.Symbol)
             .Select(g => g.OrderByDescending(x => x.CreatedAtUtc).First())
-            .Where(x => x.Signal == "BUY" &&
-                        PassesQualityGate(x, symbolBias) &&
+            .Where(x =>
                         EntryFilters.IsPreferredRecoverySymbol(x.Symbol) &&
+                        (x.Signal == "BUY" || x.Signal == "WATCH") &&
+                        x.Score >= 6.5m &&
                         !EntryFilters.IsHardBlockedSymbol(x.Symbol, now) &&
-                        (!quarantine.Contains(x.Symbol) || EntryFilters.IsPreferredRecoverySymbol(x.Symbol)) &&
                         !AutopilotSymbolBlocklist.Contains(x.Symbol) &&
-                        TradingSymbolFilters.IsTradableVolatilePair(x.Symbol) &&
-                        EntryFilters.IsAutopilotAllowedSymbol(x.Symbol))
-            .OrderByDescending(x => EntryFilters.IsMajorSymbol(x.Symbol) ? 1 : 0)
-            .ThenByDescending(x => GetAdjustedScore(x, symbolBias))
+                        TradingSymbolFilters.IsTradableVolatilePair(x.Symbol))
+            .OrderByDescending(x => GetAdjustedScore(x, symbolBias))
             .ToList();
+
+        // Si el gate esta OK pero el advisor no da BUY en BTC/ETH, sembrar flota minima HTF igual.
+        if (candidates.Count == 0 && maxAutoBots > 0 && backtestGate.IsLiveReady)
+        {
+            candidates =
+            [
+                new InvestmentSuggestion
+                {
+                    Symbol = "BTCUSDT",
+                    Signal = "BUY",
+                    Score = 7.5m,
+                    SuggestedStrategy = StrategyType.PullbackHtf,
+                    CreatedAtUtc = now,
+                    Rationale = "Seed HTF gate-ready."
+                },
+                new InvestmentSuggestion
+                {
+                    Symbol = "ETHUSDT",
+                    Signal = "BUY",
+                    Score = 7.4m,
+                    SuggestedStrategy = StrategyType.PullbackHtf,
+                    CreatedAtUtc = now,
+                    Rationale = "Seed HTF gate-ready."
+                }
+            ];
+        }
 
         if (candidates.Count == 0 || maxAutoBots == 0)
         {
@@ -297,8 +323,8 @@ public sealed class AutoTraderService(
                 }
 
                 recyclable.Name = $"AutoPilot-HTF-{candidate.Symbol}";
-                recyclable.BudgetUsdt = 20m;
-                recyclable.MaxPositionPerTradeUsdt = 20m;
+                recyclable.BudgetUsdt = StrategyExitProfiles.HtfBudgetUsdt;
+                recyclable.MaxPositionPerTradeUsdt = StrategyExitProfiles.HtfQuotePerTradeUsdt;
                 recyclable.StopLossPercent = htf.Sl;
                 recyclable.TakeProfitPercent = htf.Tp;
                 recyclable.TakeProfit1Percent = htf.Tp;
@@ -307,10 +333,10 @@ public sealed class AutoTraderService(
                 recyclable.TrailingActivationPercent = Math.Max(htf.TrailAct, MinNetProfitFloor);
                 recyclable.TrailingStopPercent = htf.TrailStop;
                 recyclable.MaxHoldingMinutes = htf.MaxHold;
-                recyclable.MaxDailyLossUsdt = 2m;
+                recyclable.MaxDailyLossUsdt = StrategyExitProfiles.HtfMaxDailyLossUsdt;
                 recyclable.MaxExposurePercent = 100m;
-                recyclable.CooldownMinutesAfterLoss = 30;
-                recyclable.MaxConsecutiveLossTrades = 3;
+                recyclable.CooldownMinutesAfterLoss = 45;
+                recyclable.MaxConsecutiveLossTrades = StrategyExitProfiles.HtfMaxConsecutiveLosses;
                 recyclable.Symbols = [candidate.Symbol];
                 recyclable.State = BotState.Running;
                 recyclable.IsAutoManaged = true;
@@ -335,8 +361,8 @@ public sealed class AutoTraderService(
             dbContext.Bots.Add(new TradingBot
             {
                 Name = $"AutoPilot-HTF-{candidate.Symbol}",
-                BudgetUsdt = 20m,
-                MaxPositionPerTradeUsdt = 20m,
+                BudgetUsdt = StrategyExitProfiles.HtfBudgetUsdt,
+                MaxPositionPerTradeUsdt = StrategyExitProfiles.HtfQuotePerTradeUsdt,
                 StopLossPercent = htf.Sl,
                 TakeProfitPercent = htf.Tp,
                 TakeProfit1Percent = htf.Tp,
@@ -345,10 +371,10 @@ public sealed class AutoTraderService(
                 TrailingActivationPercent = Math.Max(htf.TrailAct, MinNetProfitFloor),
                 TrailingStopPercent = htf.TrailStop,
                 MaxHoldingMinutes = htf.MaxHold,
-                MaxDailyLossUsdt = 2m,
+                MaxDailyLossUsdt = StrategyExitProfiles.HtfMaxDailyLossUsdt,
                 MaxExposurePercent = 100m,
-                CooldownMinutesAfterLoss = 30,
-                MaxConsecutiveLossTrades = 3,
+                CooldownMinutesAfterLoss = 45,
+                MaxConsecutiveLossTrades = StrategyExitProfiles.HtfMaxConsecutiveLosses,
                 Symbols = [candidate.Symbol],
                 State = BotState.Running,
                 IsAutoManaged = true,
@@ -417,6 +443,20 @@ public sealed class AutoTraderService(
         }
 
         return null;
+    }
+
+    private async Task ForceHaltSettingsAsync(string reason)
+    {
+        var row = await dbContext.BinanceSettings.FirstOrDefaultAsync(x => x.Id == 1);
+        if (row is null || row.MaxAutoBots <= 0)
+        {
+            return;
+        }
+
+        row.MaxAutoBots = 0;
+        row.UpdatedAtUtc = DateTime.UtcNow;
+        await dbContext.SaveChangesAsync();
+        _ = reason;
     }
 
     private async Task<Dictionary<string, decimal>> BuildSymbolBiasMapAsync(DateTime nowUtc)

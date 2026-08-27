@@ -46,7 +46,7 @@ public sealed class PortfolioRiskService(
         var globalMaxLoss = settings.GlobalMaxDailyLossUsdt <= 0m ? 15m : settings.GlobalMaxDailyLossUsdt;
         var btcGate = settings.BtcCrashGatePercent <= 0m ? 3m : settings.BtcCrashGatePercent;
         var maxAlts = settings.MaxConcurrentAltPositions <= 0 ? 4 : settings.MaxConcurrentAltPositions;
-        const int maxOpenPositionsFleet = 2;
+        const int maxOpenPositionsFleet = 1;
 
         var dailyPnl = await GetTodayRealizedPnlAsync(ct);
         if (dailyPnl <= -Math.Abs(globalMaxLoss))
