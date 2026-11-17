@@ -559,13 +559,18 @@ using (var scope = app.Services.CreateScope())
         }
     }
 
-    // Bots sin posicion abierta (no hay activo a la espera de venta): budget y tope por trade 20/20.
+    // AutoPilot HTF flat: alinear a perfil seguro 12/12 (no forzar 20 ni pisar bots manuales).
     var nowBudgetAlign = DateTime.UtcNow;
+    var htfBudget = StrategyExitProfiles.HtfBudgetUsdt;
+    var htfQuote = StrategyExitProfiles.HtfQuotePerTradeUsdt;
     await db.Bots
-        .Where(b => b.PositionQuantity <= 0m && (b.BudgetUsdt != 20m || b.MaxPositionPerTradeUsdt != 20m))
+        .Where(b => b.IsAutoManaged &&
+                    b.StrategyType == StrategyType.PullbackHtf &&
+                    b.PositionQuantity <= 0m &&
+                    (b.BudgetUsdt != htfBudget || b.MaxPositionPerTradeUsdt != htfQuote))
         .ExecuteUpdateAsync(s => s
-            .SetProperty(b => b.BudgetUsdt, 20m)
-            .SetProperty(b => b.MaxPositionPerTradeUsdt, 20m)
+            .SetProperty(b => b.BudgetUsdt, htfBudget)
+            .SetProperty(b => b.MaxPositionPerTradeUsdt, htfQuote)
             .SetProperty(b => b.UpdatedAtUtc, nowBudgetAlign));
 
     if (!await db.Bots.AnyAsync())
@@ -573,15 +578,16 @@ using (var scope = app.Services.CreateScope())
         var seedStart = DateTime.UtcNow;
         db.Bots.Add(new TradingBot
         {
-            Name = "Momentum-BTC",
-            BudgetUsdt = 20m,
-            MaxPositionPerTradeUsdt = 20m,
-            StopLossPercent = 1.8m,
-            TakeProfitPercent = 3.2m,
-            MaxDailyLossUsdt = 60m,
+            Name = "PullbackHtf-BTC",
+            BudgetUsdt = htfBudget,
+            MaxPositionPerTradeUsdt = htfQuote,
+            StopLossPercent = 1.0m,
+            TakeProfitPercent = 3.0m,
+            MaxDailyLossUsdt = StrategyExitProfiles.HtfMaxDailyLossUsdt,
+            StrategyType = StrategyType.PullbackHtf,
+            IsAutoManaged = true,
             Symbols = ["BTCUSDT"],
-            State = BotState.Running,
-            LastRunningStartedAtUtc = seedStart,
+            State = BotState.Stopped,
             UpdatedAtUtc = seedStart
         });
         await db.SaveChangesAsync();
@@ -978,7 +984,7 @@ app.MapGet("/api/audit/orders", async (int take, AppDbContext db) =>
     return Results.Ok(data);
 });
 
-app.MapGet("/api/system/readiness", async (AppDbContext db) =>
+app.MapGet("/api/system/readiness", async (AppDbContext db, IBacktestGateService gate) =>
 {
     var settings = await db.BinanceSettings.FirstOrDefaultAsync(x => x.Id == 1) ?? new BinanceConnectionSettings();
     var hasRunningBots = await db.Bots.AnyAsync(x => x.State == BotState.Running);
@@ -986,9 +992,12 @@ app.MapGet("/api/system/readiness", async (AppDbContext db) =>
     var liveGuardsOk = settings.LiveEnabledByChecklist && !settings.GlobalKillSwitch &&
                        (settings.Environment != BinanceEnvironment.Production || settings.LiveSafetyConfirmed);
     var liveReady = settings.IsEnabled && settings.ExecutionMode == TradeExecutionMode.Live && exchangeConfigured && liveGuardsOk;
-    var summary = liveReady
-        ? "Sistema listo para operacion Live con guardas activas."
-        : "Sistema funcional en paper/diagnostico. Live requiere checklist, credenciales y kill switch desactivado.";
+    var gateReady = gate.IsLiveReady;
+    var summary = !gateReady
+        ? $"App OK pero gate HTF cerrado (MaxAutoBots={settings.MaxAutoBots}). {gate.Summary}"
+        : liveReady
+            ? "Sistema listo para operacion Live con guardas activas y gate HTF OK."
+            : "Gate HTF OK. Live requiere checklist, credenciales y kill switch desactivado.";
     return Results.Ok(new SystemReadinessView
     {
         AppHealthy = true,
@@ -996,6 +1005,10 @@ app.MapGet("/api/system/readiness", async (AppDbContext db) =>
         ExchangeConfigured = exchangeConfigured,
         LiveGuardsOk = liveGuardsOk,
         LiveReady = liveReady,
+        BacktestGateReady = gateReady,
+        MaxAutoBots = settings.MaxAutoBots,
+        GateSummary = gate.Summary,
+        GateEvaluatedAtUtc = gate.EvaluatedAtUtc,
         Summary = summary
     });
 });

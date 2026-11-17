@@ -35,10 +35,10 @@ public sealed class AutoTraderService(
     private const decimal QuarantineAvgLossToWinRatio = 1.2m;
     private const int MaxAutoBotsHardCap = 15;
     private const decimal MinNetProfitFloor = 0.35m;
-    /// <summary>Kill-switch agresivo: corta flota antes de sangrar como el regimen 1m.</summary>
-    private const int FleetKillSwitchMinSells = 6;
-    private const decimal FleetKillSwitchMinProfitFactor = 1.05m;
-    private const decimal FleetKillSwitchMaxNetLossUsdt = -0.50m;
+    /// <summary>Kill-switch anti-sangrado: corta si las ultimas ventas no cubren fees+SL.</summary>
+    private const int FleetKillSwitchMinSells = 8;
+    private const decimal FleetKillSwitchMinProfitFactor = 1.0m;
+    private const decimal FleetKillSwitchMaxNetLossUsdt = -1.0m;
     /// <summary>Cohorte HTF segura: ignora SELL del regimen Pullback 1m.</summary>
     private static readonly DateTime FleetEdgeResetUtc = new(2026, 8, 27, 0, 0, 0, DateTimeKind.Utc);
 
@@ -145,6 +145,25 @@ public sealed class AutoTraderService(
             bot.OutOfTopCycles = 0;
         }
 
+        // Sincronizar params anti-perdida HTF en bots auto sin posicion (no esperar recycle).
+        var htfSync = StrategyExitProfiles.AutoPilotParams(StrategyType.PullbackHtf);
+        foreach (var bot in existingAutoBots.Where(x =>
+                     x.StrategyType == StrategyType.PullbackHtf &&
+                     x.PositionQuantity <= 0m))
+        {
+            bot.BudgetUsdt = StrategyExitProfiles.HtfBudgetUsdt;
+            bot.MaxPositionPerTradeUsdt = StrategyExitProfiles.HtfQuotePerTradeUsdt;
+            bot.StopLossPercent = htfSync.Sl;
+            bot.TakeProfitPercent = htfSync.Tp;
+            bot.TakeProfit1Percent = htfSync.Tp;
+            bot.TakeProfit2Percent = htfSync.Tp;
+            bot.TrailingActivationPercent = Math.Max(htfSync.TrailAct, MinNetProfitFloor);
+            bot.TrailingStopPercent = htfSync.TrailStop;
+            bot.MaxHoldingMinutes = htfSync.MaxHold;
+            bot.MaxDailyLossUsdt = StrategyExitProfiles.HtfMaxDailyLossUsdt;
+            bot.MaxConsecutiveLossTrades = StrategyExitProfiles.HtfMaxConsecutiveLosses;
+        }
+
         // AutoPilot solo majors/mid liquidos: liberar slots ocupados por alts iliquidos.
         foreach (var bot in existingAutoBots.Where(x =>
                      x.State == BotState.Running &&
@@ -169,39 +188,16 @@ public sealed class AutoTraderService(
             .Select(g => g.OrderByDescending(x => x.CreatedAtUtc).First())
             .Where(x =>
                         EntryFilters.IsPreferredRecoverySymbol(x.Symbol) &&
-                        (x.Signal == "BUY" || x.Signal == "WATCH") &&
-                        x.Score >= 6.5m &&
+                        x.Signal == "BUY" &&
+                        x.SuggestedStrategy == StrategyType.PullbackHtf &&
+                        PassesQualityGate(x, symbolBias) &&
                         !EntryFilters.IsHardBlockedSymbol(x.Symbol, now) &&
                         !AutopilotSymbolBlocklist.Contains(x.Symbol) &&
                         TradingSymbolFilters.IsTradableVolatilePair(x.Symbol))
             .OrderByDescending(x => GetAdjustedScore(x, symbolBias))
             .ToList();
 
-        // Si el gate esta OK pero el advisor no da BUY en BTC/ETH, sembrar flota minima HTF igual.
-        if (candidates.Count == 0 && maxAutoBots > 0 && backtestGate.IsLiveReady)
-        {
-            candidates =
-            [
-                new InvestmentSuggestion
-                {
-                    Symbol = "BTCUSDT",
-                    Signal = "BUY",
-                    Score = 7.5m,
-                    SuggestedStrategy = StrategyType.PullbackHtf,
-                    CreatedAtUtc = now,
-                    Rationale = "Seed HTF gate-ready."
-                },
-                new InvestmentSuggestion
-                {
-                    Symbol = "ETHUSDT",
-                    Signal = "BUY",
-                    Score = 7.4m,
-                    SuggestedStrategy = StrategyType.PullbackHtf,
-                    CreatedAtUtc = now,
-                    Rationale = "Seed HTF gate-ready."
-                }
-            ];
-        }
+        // Sin seed artificial: operar sin señal BUY real del advisor era una fuente de perdidas.
 
         if (candidates.Count == 0 || maxAutoBots == 0)
         {

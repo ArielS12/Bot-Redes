@@ -451,6 +451,10 @@ public sealed class SystemReadinessView
     public bool ExchangeConfigured { get; set; }
     public bool LiveGuardsOk { get; set; }
     public bool LiveReady { get; set; }
+    public bool BacktestGateReady { get; set; }
+    public int MaxAutoBots { get; set; }
+    public string GateSummary { get; set; } = string.Empty;
+    public DateTime? GateEvaluatedAtUtc { get; set; }
     public string Summary { get; set; } = string.Empty;
 }
 

@@ -37,10 +37,8 @@ public sealed class BotService(
     private const decimal BaseRiskPercentPerTrade = 0.50m;
     /// <summary>Coste estimado round-trip (fees+slippage) en basis points.</summary>
     private const decimal RoundTripCostBps = 20m;
-    /// <summary>Floor tactico: no recortar winners por debajo de ~mitad del TP 4.2%.</summary>
+    /// <summary>Floor tactico legacy (no-HTF); HTF usa StrategyExitProfiles.MinNetProfitPercent.</summary>
     private const decimal MinNetProfitToExitPercent = 2.0m;
-    /// <summary>Soft BE: salir cubriendo ~20 bps de fees, no a +0.05% (neto negativo).</summary>
-    private const decimal SoftBreakevenExitPercent = 0.25m;
     /// <summary>Armar soft BE en el mismo umbral que trailing si el bot no trae activation.</summary>
     private const decimal SoftBreakevenArmPercentFallback = 1.5m;
     /// <summary>Minutos sin MFE suficiente y en rojo claro → invalidacion temprana.</summary>
@@ -51,8 +49,8 @@ public sealed class BotService(
     private const int MaxZombieHoldingMinutes = 480;
     /// <summary>PnL % anomalo: forzar venta y circuit del simbolo.</summary>
     private const decimal AnomalyLossPercent = -3.0m;
-    /// <summary>Techo duro: nunca diferir SL por debajo de este PnL %.</summary>
-    private const decimal StopLossHardFloorPercent = -2.0m;
+    /// <summary>Techo duro: nunca diferir SL por debajo de este PnL % (antes -2%; reducia R:R real).</summary>
+    private const decimal StopLossHardFloorPercent = -1.5m;
     /// <summary>Minutos maximos de gracia tras el primer toque de SL si hay esperanza de rebote.</summary>
     private const int StopLossDeferGraceMinutes = 15;
     /// <summary>Distancia maxima a Support90d (%) para considerar "cerca de soporte".</summary>
@@ -346,6 +344,7 @@ public sealed class BotService(
             var profile = StrategyTimeframeProfile.For(bot.StrategyType);
             var minNetProfit = StrategyExitProfiles.MinNetProfitPercent(bot.StrategyType);
             var earlyInvalidationMinutes = StrategyExitProfiles.EarlyInvalidationMinutes(bot.StrategyType);
+            var earlyInvalidationMinLoss = StrategyExitProfiles.EarlyInvalidationMinLossPercent(bot.StrategyType);
             var maxZombieHoldingMinutes = StrategyExitProfiles.MaxZombieHoldingMinutes(bot.StrategyType);
             var selected = bot.Symbols
                 .Where(marketSnapshot.ContainsKey)
@@ -369,10 +368,13 @@ public sealed class BotService(
                 continue;
             }
 
-            if (!string.IsNullOrWhiteSpace(bot.CooldownSymbol) &&
-                bot.CooldownSymbol.Equals(activeSymbol, StringComparison.OrdinalIgnoreCase) &&
-                bot.CooldownUntilUtc is not null &&
-                DateTime.UtcNow < bot.CooldownUntilUtc.Value)
+            // Cooldown solo bloquea NUEVAS entradas. Con posicion abierta hay que seguir
+            // evaluando SL/TP/soft-BE (un continue aqui dejaba stops sin gestionar tras fills parciales).
+            var inCooldown = !string.IsNullOrWhiteSpace(bot.CooldownSymbol) &&
+                            bot.CooldownSymbol.Equals(activeSymbol, StringComparison.OrdinalIgnoreCase) &&
+                            bot.CooldownUntilUtc is not null &&
+                            DateTime.UtcNow < bot.CooldownUntilUtc.Value;
+            if (inCooldown && bot.PositionQuantity <= 0m)
             {
                 bot.UpdatedAtUtc = DateTime.UtcNow;
                 continue;
@@ -447,13 +449,17 @@ public sealed class BotService(
             var mfePct = ComputeMaxFavorableExcursionPercent(bot);
             var holdingMinutes = GetHoldingMinutes(bot);
             var progressToTp = bot.TakeProfitPercent > 0m ? pnlPct / bot.TakeProfitPercent : 0m;
-            // Soft BE: armar en trailing activation (~1.5%), salir cubriendo fees (~+0.25%).
+            // Soft BE: armar en trailing activation; salir al floor de profit protegido (no en rojo profundo).
+            // Si el precio salta por debajo de 0 tras armar, SL/anomalia gestionan; soft-BE no debe
+            // etiquetar ni forzar salidas ya peores que el floor (deja expectancy a SL).
             var softBeArmPct = bot.TrailingActivationPercent > 0m
                 ? bot.TrailingActivationPercent
                 : SoftBreakevenArmPercentFallback;
+            var softBeExitPct = StrategyExitProfiles.SoftBreakevenExitPercent(bot.StrategyType);
             var softBreakevenArmed = bot.PositionQuantity > 0m && mfePct >= softBeArmPct;
             var softBreakevenHit = softBreakevenArmed &&
-                                   pnlPct <= StrategyExitProfiles.SoftBreakevenExitPercent(bot.StrategyType);
+                                   pnlPct <= softBeExitPct &&
+                                   pnlPct >= 0m;
             // BE profundo legacy: 70% del camino al TP.
             var breakevenArmed = progressToTp >= 0.70m &&
                                  pnlPct > roundTripCostPct &&
@@ -473,7 +479,7 @@ public sealed class BotService(
                               (timeExpiredConfigured && contextDefensiveExitHit);
             var earlyInvalidationHit = holdingMinutes >= earlyInvalidationMinutes &&
                                        mfePct < minNetProfit &&
-                                       pnlPct <= EarlyInvalidationMinLossPercent;
+                                       pnlPct <= earlyInvalidationMinLoss;
             var anomalyLossHit = bot.PositionQuantity > 0m && pnlPct <= AnomalyLossPercent;
             var netProfitableEnough = pnlPct >= minNetProfit;
             var investedCapital = bot.PositionQuantity > 0m && bot.AverageEntryPrice > 0m
@@ -498,7 +504,7 @@ public sealed class BotService(
             }
 
             // Evita promediar al alza involuntariamente: primero se cierra posicion, luego se permite nueva entrada.
-            if (bot.PositionQuantity <= 0m && buySignal && !blockPullbackVolatileDay && !blockPullbackEmaSpread)
+            if (bot.PositionQuantity <= 0m && !inCooldown && buySignal && !blockPullbackVolatileDay && !blockPullbackEmaSpread)
             {
                 var symbol = buyCandidate!.Symbol;
                 if (IsSymbolCircuitOpen(symbol))
@@ -683,7 +689,7 @@ public sealed class BotService(
                 var bounceInvalidationHit = sellSignal &&
                                             holdingMinutes >= minHoldBounce &&
                                             mfePct < minNetProfit &&
-                                            pnlPct <= EarlyInvalidationMinLossPercent;
+                                            pnlPct <= earlyInvalidationMinLoss;
                 // Salidas de riesgo (SL/time-stop/contexto/BE/invalidacion/anomalia) sin exigir profit tactico.
                 var riskExit = stopLossExit || breakevenStopHit || softBreakevenHit || timeStopHit ||
                                contextDefensiveExitHit || earlyInvalidationHit || anomalyLossHit ||
@@ -744,6 +750,7 @@ public sealed class BotService(
                     bot.RealizedPnlUsdt += realized;
                     bot.ConsecutiveLossTrades = realized < 0m ? bot.ConsecutiveLossTrades + 1 : 0;
                     var positionFullyClosed = bot.PositionQuantity - fill.ExecutedQuantity <= 0m;
+                    // Cooldown SOLO con cierre total: tras fill parcial hay que seguir gestionando el resto.
                     if (positionFullyClosed && bot.IsAutoManaged)
                     {
                         var cooldownMin = realized < 0m
@@ -752,12 +759,12 @@ public sealed class BotService(
                         bot.CooldownSymbol = activeSymbol;
                         bot.CooldownUntilUtc = DateTime.UtcNow.AddMinutes(cooldownMin);
                     }
-                    else if (realized < 0m && bot.CooldownMinutesAfterLoss > 0)
+                    else if (positionFullyClosed && realized < 0m && bot.CooldownMinutesAfterLoss > 0)
                     {
                         bot.CooldownSymbol = activeSymbol;
                         bot.CooldownUntilUtc = DateTime.UtcNow.AddMinutes(bot.CooldownMinutesAfterLoss);
                     }
-                    else if (realized >= 0m && !bot.IsAutoManaged)
+                    else if (positionFullyClosed && realized >= 0m && !bot.IsAutoManaged)
                     {
                         bot.CooldownSymbol = string.Empty;
                         bot.CooldownUntilUtc = null;
@@ -950,6 +957,7 @@ public sealed class BotService(
             var profile = StrategyTimeframeProfile.For(bot.StrategyType);
             var minNetProfit = StrategyExitProfiles.MinNetProfitPercent(bot.StrategyType);
             var earlyInvalidationMinutes = StrategyExitProfiles.EarlyInvalidationMinutes(bot.StrategyType);
+            var earlyInvalidationMinLoss = StrategyExitProfiles.EarlyInvalidationMinLossPercent(bot.StrategyType);
             var maxZombieHoldingMinutes = StrategyExitProfiles.MaxZombieHoldingMinutes(bot.StrategyType);
             var selected = bot.Symbols
                 .Where(marketSnapshot.ContainsKey)
@@ -1000,9 +1008,11 @@ public sealed class BotService(
             var softBeArmPct = bot.TrailingActivationPercent > 0m
                 ? bot.TrailingActivationPercent
                 : SoftBreakevenArmPercentFallback;
+            var softBeExitPctDiag = StrategyExitProfiles.SoftBreakevenExitPercent(bot.StrategyType);
             var softBreakevenArmed = bot.PositionQuantity > 0m && mfePct >= softBeArmPct;
             var softBreakevenHit = softBreakevenArmed &&
-                                   pnlPct <= StrategyExitProfiles.SoftBreakevenExitPercent(bot.StrategyType);
+                                   pnlPct <= softBeExitPctDiag &&
+                                   pnlPct >= 0m;
             var trailingArmed = pnlPct >= bot.TrailingActivationPercent && bot.PeakPriceSinceEntry > 0m;
             var configuredHoldMinutes = bot.MaxHoldingMinutes > 0 ? bot.MaxHoldingMinutes : 360;
             var timeExpiredConfigured = holdingMinutes >= configuredHoldMinutes;
@@ -1014,7 +1024,7 @@ public sealed class BotService(
             var timeStopFeeGated = timeExpiredConfigured && !timeStopHit;
             var earlyInvalidationHit = holdingMinutes >= earlyInvalidationMinutes &&
                                        mfePct < minNetProfit &&
-                                       pnlPct <= EarlyInvalidationMinLossPercent;
+                                       pnlPct <= earlyInvalidationMinLoss;
             var anomalyLossHit = bot.PositionQuantity > 0m && pnlPct <= AnomalyLossPercent;
             var stopLossDeferReason = string.Empty;
             var stopLossDeferred = stopLossHit &&
@@ -1148,13 +1158,13 @@ public sealed class BotService(
             {
                 label = "SOFT_BE_LISTO";
                 reason =
-                    $"Soft breakeven: MFE {mfePct:0.##}% >= {softBeArmPct:0.##}% y PnL actual {pnlPct:0.##}% <= {SoftBreakevenExitPercent:0.##}%.";
+                    $"Soft breakeven: MFE {mfePct:0.##}% >= {softBeArmPct:0.##}% y PnL actual {pnlPct:0.##}% <= {softBeExitPctDiag:0.##}% (floor protegido).";
             }
             else if (earlyInvalidationHit)
             {
                 label = "INVALIDACION_180";
                 reason =
-                    $"Invalidacion temprana: {holdingMinutes} min sin MFE >= {MinNetProfitToExitPercent:0.##}% y PnL {pnlPct:0.##}% <= {EarlyInvalidationMinLossPercent:0.##}%.";
+                    $"Invalidacion temprana: {holdingMinutes} min sin MFE >= {minNetProfit:0.##}% y PnL {pnlPct:0.##}% <= {earlyInvalidationMinLoss:0.##}%.";
             }
             else if (stopLossDeferred)
             {
@@ -1228,10 +1238,12 @@ public sealed class BotService(
 
     private static decimal ComputeEffectiveStopLossPercent(TradingBot bot, TechnicalMarketSnapshot snapshot)
     {
+        // Respeta el SL configurado del bot (HTF 1.0%); ATR solo puede ensanchar, no forzar floor 1.2%.
+        var configured = Math.Max(0.80m, bot.StopLossPercent);
         var atrBased = snapshot.AtrPercent * 1.5m;
-        var floor = 1.2m;
-        var ceiling = Math.Max(floor, bot.StopLossPercent);
-        return Math.Clamp(Math.Max(atrBased, floor), floor, ceiling);
+        var widened = Math.Max(configured, atrBased);
+        // Techo: no ensanchar mas del doble del SL configurado (evita stops absurdos en spikes de ATR).
+        return Math.Min(widened, configured * 2m);
     }
 
     private static bool PassesMarketStructureForBuy(MarketStructureSnapshot? structure) =>
@@ -1381,10 +1393,11 @@ public sealed class BotService(
         }
 
         // Sin MFE minimo no hay "esperanza de proteger gains": vender al primer toque de SL.
-        if (mfePct < MinNetProfitToExitPercent)
+        var minMfeForDefer = StrategyExitProfiles.MinNetProfitPercent(bot.StrategyType);
+        if (mfePct < minMfeForDefer)
         {
             ClearStopLossGrace(bot);
-            reason = $"SL sin diferir: MFE {mfePct:0.##}% < {MinNetProfitToExitPercent:0.##}% (trade nunca fue suficientemente verde).";
+            reason = $"SL sin diferir: MFE {mfePct:0.##}% < {minMfeForDefer:0.##}% (trade nunca fue suficientemente verde).";
             return false;
         }
 

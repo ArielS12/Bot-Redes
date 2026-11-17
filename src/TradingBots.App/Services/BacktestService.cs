@@ -116,7 +116,7 @@ public sealed class BacktestService(
                 var slHit = pnlPct <= -request.StopLossPercent;
                 var bounceInvalidated = signals.ShouldSell(snap1, snap5) &&
                                         (mfePct < MinNetProfitToExitPercent || pnlPct < 0m);
-                var softBeHit = mfePct >= trailArm && pnlPct <= SoftBreakevenExitPercent;
+                var softBeHit = mfePct >= trailArm && pnlPct <= SoftBreakevenExitPercent && pnlPct >= 0m;
                 var earlyInvalidation = holdingMinutes >= EarlyInvalidationMinutes &&
                                         mfePct < MinNetProfitToExitPercent &&
                                         pnlPct <= EarlyInvalidationMinLossPercent;
@@ -298,15 +298,15 @@ public sealed class BacktestService(
                 var slHit = pnlPct <= -stopLoss;
                 var minHoldBounce = StrategyExitProfiles.MinHoldBeforeBounceInvalidationMinutes(StrategyType.PullbackHtf);
                 var softBeExit = StrategyExitProfiles.SoftBreakevenExitPercent(StrategyType.PullbackHtf);
+                var earlyInvMinLoss = StrategyExitProfiles.EarlyInvalidationMinLossPercent(StrategyType.PullbackHtf);
                 var bounceInvalidated = holdingMinutes >= minHoldBounce &&
                                         signals.ShouldSell(snap15, snap1h) &&
                                         mfePct < minNetProfit &&
-                                        pnlPct <= EarlyInvalidationMinLossPercent;
-                var softBeHit = mfePct >= trailAct && pnlPct <= softBeExit;
+                                        pnlPct <= earlyInvMinLoss;
+                var softBeHit = mfePct >= trailAct && pnlPct <= softBeExit && pnlPct >= 0m;
                 var earlyInvHit = holdingMinutes >= earlyInvalidation &&
                                   mfePct < minNetProfit &&
-                                  pnlPct <= EarlyInvalidationMinLossPercent;
-                var timeStopConfigured = holdingMinutes >= maxHold;
+                                  pnlPct <= earlyInvMinLoss;
                 var zombieRed = holdingMinutes >= maxZombie && pnlPct <= 0m;
 
                 string? exitReason = null;
@@ -326,8 +326,9 @@ public sealed class BacktestService(
                 {
                     exitReason = "soft_breakeven";
                 }
-                else if (zombieRed || timeStopConfigured)
+                else if (zombieRed)
                 {
+                    // Alineado con live: no cerrar winners solo por MaxHoldingMinutes.
                     exitReason = "time_stop";
                 }
                 else if (trailingHit)

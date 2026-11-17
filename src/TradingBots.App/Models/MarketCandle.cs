@@ -53,9 +53,13 @@ public sealed class MarketStructureSnapshot
 public sealed class KlineBar
 {
     public DateTime OpenTimeUtc { get; set; }
+    /// <summary>Close time UTC de Binance (kline[6]). Si es futuro, la vela sigue abierta.</summary>
+    public DateTime CloseTimeUtc { get; set; }
     public decimal Open { get; set; }
     public decimal High { get; set; }
     public decimal Low { get; set; }
     public decimal Close { get; set; }
     public decimal QuoteVolume { get; set; }
+
+    public bool IsClosed(DateTime utcNow) => CloseTimeUtc <= utcNow;
 }

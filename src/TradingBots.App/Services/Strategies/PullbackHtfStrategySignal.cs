@@ -10,7 +10,7 @@ public sealed class PullbackHtfStrategySignal : IStrategySignalProvider
 {
     public StrategyType Strategy => StrategyType.PullbackHtf;
 
-    private const decimal MaxEntryRsi = 50m;
+    private const decimal MaxEntryRsi = 48m;
     private const decimal MinEntryRsi = 34m;
     private const decimal FailedBounceRsi = 26m;
 
@@ -20,6 +20,8 @@ public sealed class PullbackHtfStrategySignal : IStrategySignalProvider
         technical.EmaSlow > 0m &&
         technical.LastPrice <= technical.EmaSlow &&
         technical.MacdHistogram > technical.PreviousMacdHistogram &&
+        // Expansion minima: evita entradas "planas" que acaban en soft-BE/SL.
+        technical.MacdHistogram - technical.PreviousMacdHistogram >= technical.LastPrice * 0.000002m &&
         technical.EmaFast >= technical.EmaSlow * 0.997m;
 
     /// <summary>
@@ -108,9 +110,11 @@ public sealed class PullbackHtfStrategySignal : IStrategySignalProvider
             return null;
         }
 
-        if (!regime.DailyTrendUp)
+        // Permitir pullbacks en lateral/recuperacion si el precio sigue sobre EMA200 D1.
+        var aboveEma200 = regime.DailyEma200 > 0m && regime.LastClose >= regime.DailyEma200 * 0.995m;
+        if (!regime.DailyTrendUp && !aboveEma200)
         {
-            return "Regimen D1 HTF: tendencia diaria no alcista.";
+            return "Regimen D1 HTF: tendencia diaria no alcista y precio bajo EMA200.";
         }
 
         if (regime.DailyAtrPercentileVsYear > StrategySignalConstants.LongTermMaxAtrPercentileVsYear)

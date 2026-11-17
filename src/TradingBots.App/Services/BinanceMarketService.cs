@@ -142,28 +142,23 @@ public sealed class BinanceMarketService(
                 var response = await GetWithRetryAsync(endpoint);
                 response.EnsureSuccessStatusCode();
                 var payload = await response.Content.ReadAsStringAsync();
-                var raw = JsonSerializer.Deserialize<List<List<JsonElement>>>(payload, JsonOptions);
-                var closes = raw?
-                    .Where(x => x.Count > 4)
-                    .Select(x => decimal.TryParse(x[4].GetString(), NumberStyles.Any, CultureInfo.InvariantCulture, out var c) ? c : 0m)
-                    .Where(x => x > 0m)
-                    .ToList() ?? [];
-                var highs = raw?
-                    .Where(x => x.Count > 2)
-                    .Select(x => decimal.TryParse(x[2].GetString(), NumberStyles.Any, CultureInfo.InvariantCulture, out var h) ? h : 0m)
-                    .ToList() ?? [];
-                var lows = raw?
-                    .Where(x => x.Count > 3)
-                    .Select(x => decimal.TryParse(x[3].GetString(), NumberStyles.Any, CultureInfo.InvariantCulture, out var l) ? l : 0m)
-                    .ToList() ?? [];
-                var quoteVolumes = raw?
+                var raw = JsonSerializer.Deserialize<List<List<JsonElement>>>(payload, JsonOptions) ?? [];
+                var now = DateTime.UtcNow;
+                // Descartar vela en formacion (closeTime futuro) para evitar repaint de señales.
+                var bars = raw
                     .Where(x => x.Count > 7)
-                    .Select(x => decimal.TryParse(x[7].GetString(), NumberStyles.Any, CultureInfo.InvariantCulture, out var v) ? v : 0m)
-                    .ToList() ?? [];
-                if (closes.Count < 35)
+                    .Select(ParseKlineBar)
+                    .Where(x => x.Close > 0m && x.IsClosed(now))
+                    .ToList();
+                if (bars.Count < 35)
                 {
                     return (symbol, snapshot: (TechnicalMarketSnapshot?)null);
                 }
+
+                var closes = bars.Select(x => x.Close).ToList();
+                var highs = bars.Select(x => x.High).ToList();
+                var lows = bars.Select(x => x.Low).ToList();
+                var quoteVolumes = bars.Select(x => x.QuoteVolume).ToList();
 
                 var emaFast = CalculateEma(closes, 9);
                 var emaSlow = CalculateEma(closes, 21);
@@ -312,9 +307,11 @@ public sealed class BinanceMarketService(
     private static KlineBar ParseKlineBar(List<JsonElement> row)
     {
         var openMs = row[0].GetInt64();
+        var closeMs = row.Count > 6 ? row[6].GetInt64() : openMs;
         return new KlineBar
         {
             OpenTimeUtc = DateTimeOffset.FromUnixTimeMilliseconds(openMs).UtcDateTime,
+            CloseTimeUtc = DateTimeOffset.FromUnixTimeMilliseconds(closeMs).UtcDateTime,
             Open = ParseDecimal(row[1]),
             High = ParseDecimal(row[2]),
             Low = ParseDecimal(row[3]),

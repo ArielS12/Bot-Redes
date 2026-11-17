@@ -65,7 +65,8 @@ public sealed class BinanceSettingsService(AppDbContext dbContext) : IBinanceSet
         settings.MlShadowMode = request.MlShadowMode;
         settings.MlMinWinProbability = decimal.Clamp(request.MlMinWinProbability, 0.50m, 0.90m);
         settings.MlMinSamples = Math.Clamp(request.MlMinSamples, 30, 5000);
-        settings.GlobalMaxDailyLossUsdt = request.GlobalMaxDailyLossUsdt <= 0m ? 15m : decimal.Clamp(request.GlobalMaxDailyLossUsdt, 5m, 500m);
+        // Minimo 1 USDT para no pisar el 3 USDT del backtest gate al guardar settings.
+        settings.GlobalMaxDailyLossUsdt = request.GlobalMaxDailyLossUsdt <= 0m ? 15m : decimal.Clamp(request.GlobalMaxDailyLossUsdt, 1m, 500m);
         settings.BtcCrashGatePercent = request.BtcCrashGatePercent <= 0m ? 3m : decimal.Clamp(request.BtcCrashGatePercent, 1m, 15m);
         settings.MaxConcurrentAltPositions = Math.Clamp(request.MaxConcurrentAltPositions <= 0 ? 4 : request.MaxConcurrentAltPositions, 1, 20);
         settings.NeverTradedStopHours = Math.Clamp(request.NeverTradedStopHours <= 0 ? 36 : request.NeverTradedStopHours, 12, 168);

@@ -98,7 +98,7 @@ public sealed class TradeMlService(IServiceScopeFactory scopeFactory) : ITradeMl
     {
         var closed = await WithDbAsync(async db =>
             await db.MlTradeObservations
-                .Where(x => x.ClosedAtUtc != null && x.IsWin != null)
+                .Where(x => x.ClosedAtUtc != null && x.IsWin != null && !x.IsShadow)
                 .OrderByDescending(x => x.ClosedAtUtc)
                 .Take(3000)
                 .ToListAsync(ct), ct);
@@ -305,8 +305,8 @@ public sealed class TradeMlService(IServiceScopeFactory scopeFactory) : ITradeMl
         return await WithDbAsync(async db =>
         {
             var total = await db.MlTradeObservations.CountAsync(ct);
-            var closed = await db.MlTradeObservations.CountAsync(x => x.ClosedAtUtc != null && x.IsWin != null, ct);
-            var wins = await db.MlTradeObservations.CountAsync(x => x.ClosedAtUtc != null && x.IsWin == true, ct);
+            var closed = await db.MlTradeObservations.CountAsync(x => x.ClosedAtUtc != null && x.IsWin != null && !x.IsShadow, ct);
+            var wins = await db.MlTradeObservations.CountAsync(x => x.ClosedAtUtc != null && x.IsWin == true && !x.IsShadow, ct);
             var winRate = closed == 0 ? 0m : decimal.Round((wins * 100m) / closed, 2);
             return new MlRuntimeSummary
             {
@@ -329,12 +329,12 @@ public sealed class TradeMlService(IServiceScopeFactory scopeFactory) : ITradeMl
             var minSamples = settings.MlMinSamples <= 0 ? 80 : settings.MlMinSamples;
             var threshold = settings.MlMinWinProbability <= 0m ? 0.55m : settings.MlMinWinProbability;
             var total = await db.MlTradeObservations.CountAsync(ct);
-            var closedCount = await db.MlTradeObservations.CountAsync(x => x.ClosedAtUtc != null && x.IsWin != null, ct);
-            var wins = await db.MlTradeObservations.CountAsync(x => x.ClosedAtUtc != null && x.IsWin == true, ct);
+            var closedCount = await db.MlTradeObservations.CountAsync(x => x.ClosedAtUtc != null && x.IsWin != null && !x.IsShadow, ct);
+            var wins = await db.MlTradeObservations.CountAsync(x => x.ClosedAtUtc != null && x.IsWin == true && !x.IsShadow, ct);
             var winRate = closedCount == 0 ? 0m : decimal.Round((wins * 100m) / closedCount, 2);
 
             var closedRows = await db.MlTradeObservations
-                .Where(x => x.ClosedAtUtc != null && x.IsWin != null)
+                .Where(x => x.ClosedAtUtc != null && x.IsWin != null && !x.IsShadow)
                 .OrderByDescending(x => x.ClosedAtUtc)
                 .Take(3000)
                 .ToListAsync(ct);

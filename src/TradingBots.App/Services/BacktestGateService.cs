@@ -15,8 +15,9 @@ public interface IBacktestGateService
 }
 
 /// <summary>
-/// Gate Live HTF: BTC+ETH 45d. Pasa si ambos VERDE, o agregado PF&gt;=1.10 con n&gt;=20 y neto&gt;0.
+/// Gate Live HTF: BTC+ETH 45d. Pasa si ambos VERDE, o agregado PF&gt;=1.05 con n&gt;=20 y neto&gt;0.
 /// Al pasar, reabre MaxAutoBots=2 y baja GlobalMaxDailyLoss a 3 USDT.
+/// Se reevalua periodicamente para no quedar en halt permanente tras un FAIL puntual.
 /// </summary>
 public sealed class BacktestGateService(
     IServiceScopeFactory scopeFactory,
@@ -90,11 +91,10 @@ public sealed class BacktestGateService(
         var combinedTrades = batch.Sum(x => x.ClosedTrades);
         var combinedNet = batch.Sum(x => x.NetPnlUsdt);
         var combinedWins = batch.Sum(x => x.WinningTrades);
-        // PF agregado aproximado via net/trades no es PF real; recalcular con heuristic:
-        // si ambos tienen PF>=1.05 y expectancy>0 y n suficiente → ok.
         var aggregateOk = combinedTrades >= 20 &&
                           combinedNet > 0m &&
                           batch.All(x => x.ProfitFactor >= 1.05m && x.AvgTradePnlUsdt > 0m && x.ClosedTrades >= 6);
+        // Sin soft-pass: si el edge es marginal, mejor halt que seguir sangrando.
         var allPass = bothVerde || aggregateOk;
 
         var summary = allPass
@@ -147,37 +147,53 @@ public sealed class BacktestGateService(
             return;
         }
 
-        // Gate falla: mantener/forzar halt operativo.
+        // Gate falla: halt operativo (se reabre en la siguiente evaluacion periodica si mejora).
         if (row.MaxAutoBots > 0)
         {
             row.MaxAutoBots = 0;
             row.UpdatedAtUtc = DateTime.UtcNow;
             await db.SaveChangesAsync(ct);
-            logger.LogWarning("Gate HTF FAIL: MaxAutoBots forzado a 0.");
+            logger.LogWarning("Gate HTF FAIL: MaxAutoBots forzado a 0 (reintento periodico activo).");
         }
     }
 }
 
 public sealed class BacktestGateHostedService(IServiceScopeFactory scopeFactory) : BackgroundService
 {
+    private static readonly TimeSpan StartupDelay = TimeSpan.FromSeconds(45);
+    private static readonly TimeSpan ReevaluationInterval = TimeSpan.FromHours(6);
+
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        await Task.Delay(TimeSpan.FromSeconds(45), stoppingToken);
-        try
+        await Task.Delay(StartupDelay, stoppingToken);
+
+        while (!stoppingToken.IsCancellationRequested)
         {
-            using var scope = scopeFactory.CreateScope();
-            var gate = scope.ServiceProvider.GetRequiredService<IBacktestGateService>();
-            await gate.EvaluateAsync(stoppingToken);
-        }
-        catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
-        {
-            // shutdown
-        }
-        catch (Exception ex)
-        {
-            using var scope = scopeFactory.CreateScope();
-            var logger = scope.ServiceProvider.GetRequiredService<ILogger<BacktestGateHostedService>>();
-            logger.LogWarning(ex, "Gate HTF en startup fallo; Live sigue en halt hasta re-evaluacion.");
+            try
+            {
+                using var scope = scopeFactory.CreateScope();
+                var gate = scope.ServiceProvider.GetRequiredService<IBacktestGateService>();
+                await gate.EvaluateAsync(stoppingToken);
+            }
+            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+            {
+                break;
+            }
+            catch (Exception ex)
+            {
+                using var scope = scopeFactory.CreateScope();
+                var logger = scope.ServiceProvider.GetRequiredService<ILogger<BacktestGateHostedService>>();
+                logger.LogWarning(ex, "Gate HTF fallo; reintento en {Hours}h.", ReevaluationInterval.TotalHours);
+            }
+
+            try
+            {
+                await Task.Delay(ReevaluationInterval, stoppingToken);
+            }
+            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+            {
+                break;
+            }
         }
     }
 }

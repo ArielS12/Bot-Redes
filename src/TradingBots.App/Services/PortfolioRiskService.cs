@@ -1,6 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using TradingBots.App.Data;
 using TradingBots.App.Models;
+using TradingBots.App.Services.Strategies;
 
 namespace TradingBots.App.Services;
 
@@ -46,7 +47,8 @@ public sealed class PortfolioRiskService(
         var globalMaxLoss = settings.GlobalMaxDailyLossUsdt <= 0m ? 15m : settings.GlobalMaxDailyLossUsdt;
         var btcGate = settings.BtcCrashGatePercent <= 0m ? 3m : settings.BtcCrashGatePercent;
         var maxAlts = settings.MaxConcurrentAltPositions <= 0 ? 4 : settings.MaxConcurrentAltPositions;
-        const int maxOpenPositionsFleet = 1;
+        // Alineado con SafeLiveMaxAutoBots: cada bot de la flota puede tener su propia posicion.
+        var maxOpenPositionsFleet = StrategyExitProfiles.SafeLiveMaxAutoBots;
 
         var dailyPnl = await GetTodayRealizedPnlAsync(ct);
         if (dailyPnl <= -Math.Abs(globalMaxLoss))
@@ -73,7 +75,7 @@ public sealed class PortfolioRiskService(
             .Where(x => x.State == BotState.Running && x.PositionQuantity > 0m)
             .ToListAsync(ct);
 
-        // Quality-over-quantity: max 2 posiciones abiertas en toda la flota (mismo beta crypto).
+        // Quality-over-quantity: max N posiciones abiertas (= SafeLiveMaxAutoBots).
         if (openBots.Count >= maxOpenPositionsFleet)
         {
             return new PortfolioRiskVerdict
