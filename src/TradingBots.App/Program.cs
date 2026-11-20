@@ -559,18 +559,28 @@ using (var scope = app.Services.CreateScope())
         }
     }
 
-    // AutoPilot HTF flat: alinear a perfil seguro 12/12 (no forzar 20 ni pisar bots manuales).
+    // AutoPilot HTF: alinear perfil expectancy (SL/TP/parcial/trail) en bots sin posicion.
     var nowBudgetAlign = DateTime.UtcNow;
     var htfBudget = StrategyExitProfiles.HtfBudgetUsdt;
     var htfQuote = StrategyExitProfiles.HtfQuotePerTradeUsdt;
+    var htfParams = StrategyExitProfiles.AutoPilotParams(StrategyType.PullbackHtf);
     await db.Bots
         .Where(b => b.IsAutoManaged &&
                     b.StrategyType == StrategyType.PullbackHtf &&
-                    b.PositionQuantity <= 0m &&
-                    (b.BudgetUsdt != htfBudget || b.MaxPositionPerTradeUsdt != htfQuote))
+                    b.PositionQuantity <= 0m)
         .ExecuteUpdateAsync(s => s
             .SetProperty(b => b.BudgetUsdt, htfBudget)
             .SetProperty(b => b.MaxPositionPerTradeUsdt, htfQuote)
+            .SetProperty(b => b.StopLossPercent, htfParams.Sl)
+            .SetProperty(b => b.TakeProfitPercent, htfParams.Tp)
+            .SetProperty(b => b.TakeProfit1Percent, StrategyExitProfiles.HtfTakeProfit1Percent)
+            .SetProperty(b => b.TakeProfit1SellPercent, StrategyExitProfiles.HtfTakeProfit1SellPercent)
+            .SetProperty(b => b.TakeProfit2Percent, htfParams.Tp)
+            .SetProperty(b => b.TrailingActivationPercent, htfParams.TrailAct)
+            .SetProperty(b => b.TrailingStopPercent, htfParams.TrailStop)
+            .SetProperty(b => b.MaxHoldingMinutes, htfParams.MaxHold)
+            .SetProperty(b => b.MaxDailyLossUsdt, StrategyExitProfiles.HtfMaxDailyLossUsdt)
+            .SetProperty(b => b.MaxConsecutiveLossTrades, StrategyExitProfiles.HtfMaxConsecutiveLosses)
             .SetProperty(b => b.UpdatedAtUtc, nowBudgetAlign));
 
     if (!await db.Bots.AnyAsync())
@@ -581,9 +591,16 @@ using (var scope = app.Services.CreateScope())
             Name = "PullbackHtf-BTC",
             BudgetUsdt = htfBudget,
             MaxPositionPerTradeUsdt = htfQuote,
-            StopLossPercent = 1.0m,
-            TakeProfitPercent = 3.0m,
+            StopLossPercent = htfParams.Sl,
+            TakeProfitPercent = htfParams.Tp,
+            TakeProfit1Percent = StrategyExitProfiles.HtfTakeProfit1Percent,
+            TakeProfit1SellPercent = StrategyExitProfiles.HtfTakeProfit1SellPercent,
+            TakeProfit2Percent = htfParams.Tp,
+            TrailingActivationPercent = htfParams.TrailAct,
+            TrailingStopPercent = htfParams.TrailStop,
+            MaxHoldingMinutes = htfParams.MaxHold,
             MaxDailyLossUsdt = StrategyExitProfiles.HtfMaxDailyLossUsdt,
+            MaxConsecutiveLossTrades = StrategyExitProfiles.HtfMaxConsecutiveLosses,
             StrategyType = StrategyType.PullbackHtf,
             IsAutoManaged = true,
             Symbols = ["BTCUSDT"],

@@ -448,23 +448,22 @@ public sealed class BotService(
             var roundTripCostPct = RoundTripCostBps / 100m;
             var mfePct = ComputeMaxFavorableExcursionPercent(bot);
             var holdingMinutes = GetHoldingMinutes(bot);
-            var progressToTp = bot.TakeProfitPercent > 0m ? pnlPct / bot.TakeProfitPercent : 0m;
-            // Soft BE: armar en trailing activation; salir al floor de profit protegido (no en rojo profundo).
-            // Si el precio salta por debajo de 0 tras armar, SL/anomalia gestionan; soft-BE no debe
-            // etiquetar ni forzar salidas ya peores que el floor (deja expectancy a SL).
+            // Soft-BE desactivado en HTF (clipa runners). Otras estrategias mantienen floor de profit.
             var softBeArmPct = bot.TrailingActivationPercent > 0m
                 ? bot.TrailingActivationPercent
                 : SoftBreakevenArmPercentFallback;
             var softBeExitPct = StrategyExitProfiles.SoftBreakevenExitPercent(bot.StrategyType);
-            var softBreakevenArmed = bot.PositionQuantity > 0m && mfePct >= softBeArmPct;
+            var softBreakevenArmed = StrategyExitProfiles.SoftBreakevenEnabled(bot.StrategyType) &&
+                                     bot.PositionQuantity > 0m &&
+                                     mfePct >= softBeArmPct;
             var softBreakevenHit = softBreakevenArmed &&
                                    pnlPct <= softBeExitPct &&
                                    pnlPct >= 0m;
-            // BE profundo legacy: 70% del camino al TP.
-            var breakevenArmed = progressToTp >= 0.70m &&
-                                 pnlPct > roundTripCostPct &&
-                                 bot.PositionQuantity > 0m;
-            var breakevenStopHit = breakevenArmed && activePrice < bot.AverageEntryPrice;
+            // Hard BE tras 1R de MFE: scratch cerca de fees (minimiza perdida de runners fallidos).
+            var oneR = Math.Max(0.80m, bot.StopLossPercent);
+            var hardBeArmPct = oneR * StrategyExitProfiles.HardBreakevenArmRMultiple(bot.StrategyType);
+            var breakevenArmed = bot.PositionQuantity > 0m && mfePct >= hardBeArmPct;
+            var breakevenStopHit = breakevenArmed && pnlPct <= roundTripCostPct;
             var trailingArmed = pnlPct >= Math.Max(bot.TrailingActivationPercent, minNetProfit) &&
                                 bot.PeakPriceSinceEntry > 0m;
             var trailingStopHit = trailingArmed &&
@@ -477,9 +476,11 @@ public sealed class BotService(
             // Time-stop: a MaxHolding solo defensiva de estructura; zombie solo si PnL <= 0.
             var timeStopHit = (timeExpiredZombie && pnlPct <= 0m) ||
                               (timeExpiredConfigured && contextDefensiveExitHit);
+            // HTF: invalidacion temprana solo si ademas rompe estructura (evita micro-cortes por ruido).
             var earlyInvalidationHit = holdingMinutes >= earlyInvalidationMinutes &&
                                        mfePct < minNetProfit &&
-                                       pnlPct <= earlyInvalidationMinLoss;
+                                       pnlPct <= earlyInvalidationMinLoss &&
+                                       (bot.StrategyType != StrategyType.PullbackHtf || sellSignal);
             var anomalyLossHit = bot.PositionQuantity > 0m && pnlPct <= AnomalyLossPercent;
             var netProfitableEnough = pnlPct >= minNetProfit;
             var investedCapital = bot.PositionQuantity > 0m && bot.AverageEntryPrice > 0m
@@ -1009,7 +1010,9 @@ public sealed class BotService(
                 ? bot.TrailingActivationPercent
                 : SoftBreakevenArmPercentFallback;
             var softBeExitPctDiag = StrategyExitProfiles.SoftBreakevenExitPercent(bot.StrategyType);
-            var softBreakevenArmed = bot.PositionQuantity > 0m && mfePct >= softBeArmPct;
+            var softBreakevenArmed = StrategyExitProfiles.SoftBreakevenEnabled(bot.StrategyType) &&
+                                     bot.PositionQuantity > 0m &&
+                                     mfePct >= softBeArmPct;
             var softBreakevenHit = softBreakevenArmed &&
                                    pnlPct <= softBeExitPctDiag &&
                                    pnlPct >= 0m;
@@ -1024,7 +1027,8 @@ public sealed class BotService(
             var timeStopFeeGated = timeExpiredConfigured && !timeStopHit;
             var earlyInvalidationHit = holdingMinutes >= earlyInvalidationMinutes &&
                                        mfePct < minNetProfit &&
-                                       pnlPct <= earlyInvalidationMinLoss;
+                                       pnlPct <= earlyInvalidationMinLoss &&
+                                       (bot.StrategyType != StrategyType.PullbackHtf || sellSignal);
             var anomalyLossHit = bot.PositionQuantity > 0m && pnlPct <= AnomalyLossPercent;
             var stopLossDeferReason = string.Empty;
             var stopLossDeferred = stopLossHit &&

@@ -146,23 +146,13 @@ public sealed class AutoTraderService(
             bot.OutOfTopCycles = 0;
         }
 
-        // Sincronizar params anti-perdida HTF en bots auto sin posicion (no esperar recycle).
+        // Sincronizar perfil expectancy HTF (parcial 1.5R + trail amplio) en bots auto sin posicion.
         var htfSync = StrategyExitProfiles.AutoPilotParams(StrategyType.PullbackHtf);
         foreach (var bot in existingAutoBots.Where(x =>
                      x.StrategyType == StrategyType.PullbackHtf &&
                      x.PositionQuantity <= 0m))
         {
-            bot.BudgetUsdt = StrategyExitProfiles.HtfBudgetUsdt;
-            bot.MaxPositionPerTradeUsdt = StrategyExitProfiles.HtfQuotePerTradeUsdt;
-            bot.StopLossPercent = htfSync.Sl;
-            bot.TakeProfitPercent = htfSync.Tp;
-            bot.TakeProfit1Percent = htfSync.Tp;
-            bot.TakeProfit2Percent = htfSync.Tp;
-            bot.TrailingActivationPercent = Math.Max(htfSync.TrailAct, MinNetProfitFloor);
-            bot.TrailingStopPercent = htfSync.TrailStop;
-            bot.MaxHoldingMinutes = htfSync.MaxHold;
-            bot.MaxDailyLossUsdt = StrategyExitProfiles.HtfMaxDailyLossUsdt;
-            bot.MaxConsecutiveLossTrades = StrategyExitProfiles.HtfMaxConsecutiveLosses;
+            ApplyHtfExpectancyParams(bot, htfSync);
         }
 
         // AutoPilot solo majors/mid liquidos: liberar slots ocupados por alts iliquidos.
@@ -320,20 +310,9 @@ public sealed class AutoTraderService(
                 }
 
                 recyclable.Name = $"AutoPilot-HTF-{candidate.Symbol}";
-                recyclable.BudgetUsdt = StrategyExitProfiles.HtfBudgetUsdt;
-                recyclable.MaxPositionPerTradeUsdt = StrategyExitProfiles.HtfQuotePerTradeUsdt;
-                recyclable.StopLossPercent = htf.Sl;
-                recyclable.TakeProfitPercent = htf.Tp;
-                recyclable.TakeProfit1Percent = htf.Tp;
-                recyclable.TakeProfit1SellPercent = 0m;
-                recyclable.TakeProfit2Percent = htf.Tp;
-                recyclable.TrailingActivationPercent = Math.Max(htf.TrailAct, MinNetProfitFloor);
-                recyclable.TrailingStopPercent = htf.TrailStop;
-                recyclable.MaxHoldingMinutes = htf.MaxHold;
-                recyclable.MaxDailyLossUsdt = StrategyExitProfiles.HtfMaxDailyLossUsdt;
+                ApplyHtfExpectancyParams(recyclable, htf);
                 recyclable.MaxExposurePercent = 100m;
                 recyclable.CooldownMinutesAfterLoss = 45;
-                recyclable.MaxConsecutiveLossTrades = StrategyExitProfiles.HtfMaxConsecutiveLosses;
                 recyclable.Symbols = [candidate.Symbol];
                 recyclable.State = BotState.Running;
                 recyclable.IsAutoManaged = true;
@@ -355,23 +334,11 @@ public sealed class AutoTraderService(
             }
 
             var startUtc = DateTime.UtcNow;
-            dbContext.Bots.Add(new TradingBot
+            var created = new TradingBot
             {
                 Name = $"AutoPilot-HTF-{candidate.Symbol}",
-                BudgetUsdt = StrategyExitProfiles.HtfBudgetUsdt,
-                MaxPositionPerTradeUsdt = StrategyExitProfiles.HtfQuotePerTradeUsdt,
-                StopLossPercent = htf.Sl,
-                TakeProfitPercent = htf.Tp,
-                TakeProfit1Percent = htf.Tp,
-                TakeProfit1SellPercent = 0m,
-                TakeProfit2Percent = htf.Tp,
-                TrailingActivationPercent = Math.Max(htf.TrailAct, MinNetProfitFloor),
-                TrailingStopPercent = htf.TrailStop,
-                MaxHoldingMinutes = htf.MaxHold,
-                MaxDailyLossUsdt = StrategyExitProfiles.HtfMaxDailyLossUsdt,
                 MaxExposurePercent = 100m,
                 CooldownMinutesAfterLoss = 45,
-                MaxConsecutiveLossTrades = StrategyExitProfiles.HtfMaxConsecutiveLosses,
                 Symbols = [candidate.Symbol],
                 State = BotState.Running,
                 IsAutoManaged = true,
@@ -380,7 +347,9 @@ public sealed class AutoTraderService(
                 OutOfTopCycles = 0,
                 LastRunningStartedAtUtc = startUtc,
                 UpdatedAtUtc = startUtc
-            });
+            };
+            ApplyHtfExpectancyParams(created, htf);
+            dbContext.Bots.Add(created);
             existingAutoBots.Add(new TradingBot
             {
                 Symbols = [candidate.Symbol],
@@ -467,6 +436,24 @@ public sealed class AutoTraderService(
         row.MaxAutoBots = maxAutoBots;
         row.UpdatedAtUtc = DateTime.UtcNow;
         await dbContext.SaveChangesAsync();
+    }
+
+    private static void ApplyHtfExpectancyParams(
+        TradingBot bot,
+        (decimal Sl, decimal Tp, decimal TrailAct, decimal TrailStop, int MaxHold) htf)
+    {
+        bot.BudgetUsdt = StrategyExitProfiles.HtfBudgetUsdt;
+        bot.MaxPositionPerTradeUsdt = StrategyExitProfiles.HtfQuotePerTradeUsdt;
+        bot.StopLossPercent = htf.Sl;
+        bot.TakeProfitPercent = htf.Tp;
+        bot.TakeProfit1Percent = StrategyExitProfiles.HtfTakeProfit1Percent;
+        bot.TakeProfit1SellPercent = StrategyExitProfiles.HtfTakeProfit1SellPercent;
+        bot.TakeProfit2Percent = htf.Tp;
+        bot.TrailingActivationPercent = Math.Max(htf.TrailAct, MinNetProfitFloor);
+        bot.TrailingStopPercent = htf.TrailStop;
+        bot.MaxHoldingMinutes = htf.MaxHold;
+        bot.MaxDailyLossUsdt = StrategyExitProfiles.HtfMaxDailyLossUsdt;
+        bot.MaxConsecutiveLossTrades = StrategyExitProfiles.HtfMaxConsecutiveLosses;
     }
 
     private async Task<Dictionary<string, decimal>> BuildSymbolBiasMapAsync(DateTime nowUtc)

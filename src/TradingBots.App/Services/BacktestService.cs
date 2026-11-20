@@ -297,22 +297,28 @@ public sealed class BacktestService(
                 var tpHit = pnlPct >= takeProfit;
                 var slHit = pnlPct <= -stopLoss;
                 var minHoldBounce = StrategyExitProfiles.MinHoldBeforeBounceInvalidationMinutes(StrategyType.PullbackHtf);
-                var softBeExit = StrategyExitProfiles.SoftBreakevenExitPercent(StrategyType.PullbackHtf);
                 var earlyInvMinLoss = StrategyExitProfiles.EarlyInvalidationMinLossPercent(StrategyType.PullbackHtf);
+                var structureBroken = signals.ShouldSell(snap15, snap1h);
                 var bounceInvalidated = holdingMinutes >= minHoldBounce &&
-                                        signals.ShouldSell(snap15, snap1h) &&
+                                        structureBroken &&
                                         mfePct < minNetProfit &&
                                         pnlPct <= earlyInvMinLoss;
-                var softBeHit = mfePct >= trailAct && pnlPct <= softBeExit && pnlPct >= 0m;
+                // Hard BE tras 1R (soft-BE OFF en HTF).
+                var hardBeHit = mfePct >= stopLoss && pnlPct <= (RoundTripCostBps / 100m);
                 var earlyInvHit = holdingMinutes >= earlyInvalidation &&
                                   mfePct < minNetProfit &&
-                                  pnlPct <= earlyInvMinLoss;
+                                  pnlPct <= earlyInvMinLoss &&
+                                  structureBroken;
                 var zombieRed = holdingMinutes >= maxZombie && pnlPct <= 0m;
 
                 string? exitReason = null;
                 if (slHit)
                 {
                     exitReason = "stop_loss";
+                }
+                else if (hardBeHit)
+                {
+                    exitReason = "hard_breakeven";
                 }
                 else if (earlyInvHit)
                 {
@@ -322,13 +328,8 @@ public sealed class BacktestService(
                 {
                     exitReason = "bounce_invalidation";
                 }
-                else if (softBeHit)
-                {
-                    exitReason = "soft_breakeven";
-                }
                 else if (zombieRed)
                 {
-                    // Alineado con live: no cerrar winners solo por MaxHoldingMinutes.
                     exitReason = "time_stop";
                 }
                 else if (trailingHit)

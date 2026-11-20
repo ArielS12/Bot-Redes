@@ -13,6 +13,17 @@ Incluye:
 - pendientes recomendados
 - prompt sugerido para retomar el trabajo
 
+## Actualizacion perfil expectancy HTF (2026-11-20b)
+
+Objetivo: maximizar ganancias / reducir perdidas en trend-pullback (evidencia: soft-BE destruye edge).
+
+- Soft-BE **OFF** en PullbackHtf.
+- Hard BE tras **1R** de MFE (scratch ~fees).
+- Parcial **50% en 1.5R (2.25%)**; runner a trail/TP.
+- Params: SL **1.5** / TP **4.5** (3R) / trail arma **1.5** / trail stop **1.2**.
+- Invalidacion temprana HTF solo con rotura de estructura.
+- Backtest alineado (hard BE, sin soft-BE).
+
 ## Actualizacion AutoPilot por señal BUY (2026-11-20)
 
 - AutoTrader **ya no depende del gate HTF** para crear bots.

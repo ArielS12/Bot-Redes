@@ -3,8 +3,8 @@ using TradingBots.App.Models;
 namespace TradingBots.App.Services.Strategies;
 
 /// <summary>
-/// Pullback 15m / tendencia 1h. Entradas selectivas; salidas solo por rotura de estructura
-/// (evita el clip por histograma que sangro bounce_invalidation en backtest).
+/// Pullback 15m / tendencia 1h. Entradas selectivas en tendencia;
+/// la gestion de salida (parcial 1.5R, hard BE 1R, trail amplio) vive en BotService/ExitProfiles.
 /// </summary>
 public sealed class PullbackHtfStrategySignal : IStrategySignalProvider
 {
