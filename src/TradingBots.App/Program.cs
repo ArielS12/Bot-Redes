@@ -605,9 +605,9 @@ using (var scope = app.Services.CreateScope())
     }
     else
     {
-        // Flota segura HTF: cap 2. MaxAutoBots=0 se respeta hasta que el gate reabra.
+        // Flota segura HTF: cap 2. MaxAutoBots=0 (halt viejo del gate) se reabre para permitir BUY del advisor.
         await db.BinanceSettings
-            .Where(x => x.MaxAutoBots > StrategyExitProfiles.SafeLiveMaxAutoBots)
+            .Where(x => x.MaxAutoBots == 0 || x.MaxAutoBots > StrategyExitProfiles.SafeLiveMaxAutoBots)
             .ExecuteUpdateAsync(s => s
                 .SetProperty(x => x.MaxAutoBots, StrategyExitProfiles.SafeLiveMaxAutoBots)
                 .SetProperty(x => x.UpdatedAtUtc, DateTime.UtcNow));
@@ -993,11 +993,11 @@ app.MapGet("/api/system/readiness", async (AppDbContext db, IBacktestGateService
                        (settings.Environment != BinanceEnvironment.Production || settings.LiveSafetyConfirmed);
     var liveReady = settings.IsEnabled && settings.ExecutionMode == TradeExecutionMode.Live && exchangeConfigured && liveGuardsOk;
     var gateReady = gate.IsLiveReady;
-    var summary = !gateReady
-        ? $"App OK pero gate HTF cerrado (MaxAutoBots={settings.MaxAutoBots}). {gate.Summary}"
-        : liveReady
-            ? "Sistema listo para operacion Live con guardas activas y gate HTF OK."
-            : "Gate HTF OK. Live requiere checklist, credenciales y kill switch desactivado.";
+    var summary = liveReady
+        ? (gateReady
+            ? "Sistema listo para Live con guardas y gate HTF OK. AutoPilot crea bots con señal BUY."
+            : $"Live guards OK. Gate HTF informativo cerrado; AutoPilot crea bots con señal BUY (MaxAutoBots={settings.MaxAutoBots}). {gate.Summary}")
+        : "Sistema funcional en paper/diagnostico. Live requiere checklist, credenciales y kill switch desactivado.";
     return Results.Ok(new SystemReadinessView
     {
         AppHealthy = true,

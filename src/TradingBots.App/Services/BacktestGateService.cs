@@ -16,8 +16,9 @@ public interface IBacktestGateService
 
 /// <summary>
 /// Gate Live HTF: BTC+ETH 45d. Pasa si ambos VERDE, o agregado PF&gt;=1.05 con n&gt;=20 y neto&gt;0.
-/// Al pasar, reabre MaxAutoBots=2 y baja GlobalMaxDailyLoss a 3 USDT.
-/// Se reevalua periodicamente para no quedar en halt permanente tras un FAIL puntual.
+/// Al pasar, asegura MaxAutoBots=2 y baja GlobalMaxDailyLoss a 3 USDT.
+/// El FAIL ya no pone MaxAutoBots=0: la creacion de bots la gobierna la señal BUY del advisor.
+/// Se reevalua periodicamente (diagnostico / semaforo).
 /// </summary>
 public sealed class BacktestGateService(
     IServiceScopeFactory scopeFactory,
@@ -147,14 +148,10 @@ public sealed class BacktestGateService(
             return;
         }
 
-        // Gate falla: halt operativo (se reabre en la siguiente evaluacion periodica si mejora).
-        if (row.MaxAutoBots > 0)
-        {
-            row.MaxAutoBots = 0;
-            row.UpdatedAtUtc = DateTime.UtcNow;
-            await db.SaveChangesAsync(ct);
-            logger.LogWarning("Gate HTF FAIL: MaxAutoBots forzado a 0 (reintento periodico activo).");
-        }
+        // Gate FAIL: informativo. No cortar MaxAutoBots; AutoTrader crea solo con señal BUY (verde).
+        logger.LogWarning(
+            "Gate HTF FAIL (informativo): MaxAutoBots={Max} se mantiene; creacion condicionada a BUY del advisor.",
+            row.MaxAutoBots);
     }
 }
 

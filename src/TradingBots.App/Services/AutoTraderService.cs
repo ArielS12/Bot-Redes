@@ -13,8 +13,7 @@ public interface IAutoTraderService
 public sealed class AutoTraderService(
     AppDbContext dbContext,
     IMarketAdvisorService advisorService,
-    IBinanceSettingsService settingsService,
-    IBacktestGateService backtestGate) : IAutoTraderService
+    IBinanceSettingsService settingsService) : IAutoTraderService
 {
     private static readonly HashSet<string> AutopilotSymbolBlocklist = new(StringComparer.Ordinal)
     {
@@ -53,9 +52,11 @@ public sealed class AutoTraderService(
             maxAutoBots = 0;
             await ForceHaltSettingsAsync(fleetKillReason);
         }
-        else if (maxAutoBots > 0 && !backtestGate.IsLiveReady)
+        else if (maxAutoBots <= 0)
         {
-            maxAutoBots = 0;
+            // Señal BUY (verde) del advisor habilita creacion; el gate HTF ya no bloquea la flota.
+            maxAutoBots = StrategyExitProfiles.SafeLiveMaxAutoBots;
+            await ReopenFleetCapacityAsync(maxAutoBots);
         }
 
         var quarantine = await BuildSymbolQuarantineSetAsync(now);
@@ -453,6 +454,19 @@ public sealed class AutoTraderService(
         row.UpdatedAtUtc = DateTime.UtcNow;
         await dbContext.SaveChangesAsync();
         _ = reason;
+    }
+
+    private async Task ReopenFleetCapacityAsync(int maxAutoBots)
+    {
+        var row = await dbContext.BinanceSettings.FirstOrDefaultAsync(x => x.Id == 1);
+        if (row is null || row.MaxAutoBots == maxAutoBots)
+        {
+            return;
+        }
+
+        row.MaxAutoBots = maxAutoBots;
+        row.UpdatedAtUtc = DateTime.UtcNow;
+        await dbContext.SaveChangesAsync();
     }
 
     private async Task<Dictionary<string, decimal>> BuildSymbolBiasMapAsync(DateTime nowUtc)

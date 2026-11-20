@@ -13,6 +13,14 @@ Incluye:
 - pendientes recomendados
 - prompt sugerido para retomar el trabajo
 
+## Actualizacion AutoPilot por señal BUY (2026-11-20)
+
+- AutoTrader **ya no depende del gate HTF** para crear bots.
+- Crea/reactiva flota solo con sugerencia **BUY** (verde, score >= 7.2) en BTC/ETH + PullbackHtf + quality gate.
+- Gate FAIL deja de forzar `MaxAutoBots=0` (queda informativo / semaforo).
+- Kill-switch de flota sigue pudiendo poner `MaxAutoBots=0`.
+- Arranque: si `MaxAutoBots=0` (halt viejo), se reabre a `SafeLiveMaxAutoBots=2`.
+
 ## Actualizacion anti-perdidas (2026-11-17c)
 
 Usuario confirmo: **"solo genera perdidas"**. Se refuerza expectancy (no volumen):
